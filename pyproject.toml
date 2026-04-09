@@ -1,0 +1,108 @@
+[project]
+authors = [{name = "Tom Stanton", email = "tomdstanton@gmail.com"}]
+name = "pyseroepi"
+dynamic = ["version"]
+description = "A Python library for bacterial sero-epidemiology"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=3.0.0",
+    "pyarrow",
+    "numpy",
+    "scipy",
+    "pandera",
+]
+
+[dependency-groups]
+model = ["scikit-learn", "numpyro"]
+client = ["requests", "urllib3"]
+plot = ["plotly>=6.6.0", "kaleido"]
+app = [{include-group = "plot"}, "shiny", "shinywidgets"]
+test = ["pytest", "pytest-cov"]
+docs = ["zensical>=0.0.29", "mkdocstrings-python>=2.0.3"]
+dev = [
+    {include-group = "model"},
+    {include-group = "client"},
+    {include-group = "app"},
+    {include-group = "test"},
+    {include-group = "docs"},
+    "geopandas", "biopython"
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyseroepi"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/pyseroepi/_version.py"
+
+[tool.mypy]
+files = ["src"]
+disallow_untyped_defs = true
+disallow_any_unimported = true
+no_implicit_optional = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+#addopts = "--doctest-modules"
+#testpaths = ["tests", "src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+fix = true
+
+[tool.ruff.lint]
+select = [
+    # flake8-2020
+    "YTT",
+    # flake8-bandit
+    "S",
+    # flake8-bugbear
+    "B",
+    # flake8-builtins
+    "A",
+    # flake8-comprehensions
+    "C4",
+    # flake8-debugger
+    "T10",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # mccabe
+    "C90",
+    # pycodestyle
+    "E", "W",
+    # pyflakes
+    "F",
+    # pygrep-hooks
+    "PGH",
+    # pyupgrade
+    "UP",
+    # ruff
+    "RUF",
+    # tryceratops
+    "TRY",
+]
+ignore = [
+    # LineTooLong
+    "E501",
+    # DoNotAssignLambda
+    "E731",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+preview = true
