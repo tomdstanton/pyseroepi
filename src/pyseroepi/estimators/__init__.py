@@ -1,88 +1,13 @@
-from abc import ABC, abstractmethod
-from typing import Tuple, TypeVar, Generic, Literal
-from dataclasses import dataclass
-from warnings import warn
+from typing import Literal
 import pandas as pd
 import numpy as np
-from scipy.stats import norm, beta
-
+from scipy.stats import norm, beta, entropy
+from scipy.spatial.distance import pdist, squareform
+from pyseroepi.estimators._base import (BaseEstimator, PrevalenceEstimates, AlphaDiversityEstimates,
+                                        BetaDiversityEstimates)
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
-# Define a TypeVar that represents ANY dataclass you might invent in the future
-T_Result = TypeVar('T_Result')
-
-# The BaseEstimator inherits from Generic[T_Result]
-class BaseEstimator(ABC, Generic[T_Result]):
-    """
-    The universal contract for all pyseroepi statistical models.
-    """
-
-    def _extract_strata(self, agg_df: pd.DataFrame, exclude_cols: list[str] = None) -> Tuple[list[str], dict]:
-        if exclude_cols is None:
-            exclude_cols = []
-
-        meta = agg_df.attrs.get("prevalence_meta", {})
-        inferred_strata = [col for col in agg_df.columns if col not in exclude_cols]
-        stratified_by = meta.get("stratified_by", inferred_strata)
-        self._validate_suitability(agg_df, stratified_by)
-        return stratified_by, meta
-
-    @staticmethod
-    def _validate_suitability(df: pd.DataFrame, strata: list[str]):
-        """
-        Intelligently checks strata columns for statistical traps using
-        Pandas dtypes and naming conventions.
-        """
-        for col in strata:
-            # 1. The Continuous Float Trap
-            if pd.api.types.is_float_dtype(df[col]):
-                raise ValueError(
-                    f"Strata column '{col}' is a continuous float. "
-                    "Prevalence estimators require discrete categorical groups. "
-                    f"Please bin this variable (e.g., using pd.cut()) before aggregating."
-                )
-
-            # 2. The Raw Datetime Trap (Checks dtype OR the 'meta_' prefix)
-            if pd.api.types.is_datetime64_any_dtype(df[col]) or 'date' in col.lower():
-                # We only warn here, because sometimes daily is intentional during a rapid outbreak
-                warn(
-                    f"You are stratifying on a raw date column '{col}'. "
-                    "This will calculate prevalence for every single day. "
-                    "Consider bucketing by month/year using .dt.to_period('M') first.",
-                    UserWarning
-                )
-
-        # 3. The Primary Key / Over-Stratification Trap
-        if 'n' in df.columns:
-            # If the average group size is close to 1, they shattered the dataset
-            avg_group_size = df['n'].mean()
-            if len(df) > 1 and avg_group_size < 1.5:
-                warn(
-                    f"The average group size is {avg_group_size:.2f}. "
-                    "Did you accidentally stratify by a unique identifier (like 'sample_id')? "
-                    "This will cause your models to overfit or crash.",
-                    UserWarning
-                )
-
-    @abstractmethod
-    def calculate(self, df: pd.DataFrame) -> T_Result:
-        """
-        All child estimators MUST implement this.
-        The exact return type is defined by the child class signature.
-        """
-        pass
-
-
-@dataclass
-class PrevalenceEstimates:
-    data: pd.DataFrame
-    stratified_by: list[str]
-    method: str
-    prevalence_type: str  # "trait" or "compositional"
-    target: str           # e.g., "blaKPC" or "Serotype"
-
-
 class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
 
     Method = Literal['wilson', 'wald', 'agresti_coull', 'clopper_pearson', 'jeffreys']
@@ -122,6 +47,7 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=stratified_by,
+            adjusted_for=meta.get("adjusted_for", 'unknown'),
             method=self._method_label,
             prevalence_type=meta.get("type", "unknown"),
             target=meta.get("target", "unknown")
@@ -186,3 +112,120 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
         'clopper_pearson': _clopper_pearson_interval,
         'jeffreys': _jeffreys_interval
     }
+
+
+class AlphaDiversityEstimator(BaseEstimator[AlphaDiversityEstimates]):
+    Metric = Literal['shannon', 'simpson', 'richness']
+    _DEFAULT_METRICS = ['shannon', 'simpson', 'richness']
+    def __init__(self, target: str = None, metrics: list[Metric] = None):
+        self.target = target
+        self.metrics = metrics or self._DEFAULT_METRICS
+        self._method_label = "alpha_diversity"
+
+    def calculate(self, div_df: pd.DataFrame) -> AlphaDiversityEstimates:
+        # Extract the metadata attached by the accessor
+        meta = div_df.attrs.get("diversity_meta", {})
+        target_col = meta.get("target", self.target)
+        strata = meta.get("stratified_by", [])
+
+        if not target_col:
+            raise ValueError("Target trait must be defined either in init or via accessor metadata.")
+
+        results = []
+
+        # If stratified, group by the strata. Otherwise, treat as one global group.
+        groups = div_df.groupby(strata, observed=True) if strata else [('Global', div_df)]
+
+        for name, group in groups:
+            # We already have the counts! No need to run value_counts() again.
+            counts = group['variant_count'].values
+
+            # Filter out true zeroes (important for richness)
+            counts = counts[counts > 0]
+            if len(counts) == 0:
+                continue
+
+            p = counts / counts.sum()
+
+            row = {k: v for k, v in zip(strata, name)} if strata and isinstance(name, tuple) else {}
+            if strata and not isinstance(name, tuple):
+                row = {strata[0]: name}
+
+            if 'shannon' in self.metrics:
+                row['shannon'] = entropy(p, base=np.e)
+            if 'simpson' in self.metrics:
+                row['simpson'] = 1.0 - np.sum(p ** 2)
+            if 'richness' in self.metrics:
+                row['richness'] = len(counts)
+
+            row['n_samples'] = counts.sum()
+            results.append(row)
+
+        res_df = pd.DataFrame(results)
+
+        return AlphaDiversityEstimates(
+            data=res_df,
+            stratified_by=strata,
+            adjusted_for=meta.get("adjusted_for", 'unknown'),
+            target=target_col,
+            metrics=self.metrics
+        )
+
+
+class BetaDiversityEstimator(BaseEstimator[BetaDiversityEstimates]):
+    def __init__(self, target: str = None, metric: str = 'braycurtis'):
+        """
+        Calculates between-group dissimilarity.
+        Common metrics: 'braycurtis' (abundance-weighted), 'jaccard' (presence/absence).
+        """
+        self.target = target
+        self.metric = metric
+        self._method_label = f"beta_diversity_{self.metric}"
+
+    def calculate(self, div_df: pd.DataFrame) -> BetaDiversityEstimates:
+        # 1. Extract metadata from the accessor
+        meta = div_df.attrs.get("diversity_meta", {})
+        target_col = meta.get("target", self.target)
+        strata = meta.get("stratified_by", [])
+
+        if not target_col:
+            raise ValueError("Target trait must be defined either in init or via accessor metadata.")
+        if not strata:
+            raise ValueError("Beta diversity requires at least one stratification level to compare groups.")
+
+        # 2. Pivot the data into a Wide Matrix
+        # Rows = Strata (e.g., Hospitals), Columns = Variants (e.g., K_loci), Values = Counts
+        pivot_df = div_df.pivot_table(
+            index=strata,
+            columns=target_col,
+            values='variant_count',
+            fill_value=0,  # CRITICAL: Missing variants in a group must be explicitly 0
+            aggfunc='sum'
+        )
+
+        # 3. Calculate Pairwise Distances
+        # pdist calculates the condensed distance vector, squareform turns it into an NxN matrix
+        distances = pdist(pivot_df.values, metric=self.metric)
+        dist_matrix = squareform(distances)
+
+        # 4. Format the row/column names for the UI
+        # If stratified by multiple columns (e.g., ['Region', 'Year']), we flatten the tuple for display
+        strata_names = [
+            " | ".join(map(str, idx)) if isinstance(idx, tuple) else str(idx)
+            for idx in pivot_df.index
+        ]
+
+        # 5. Wrap back into an explicitly labeled Pandas DataFrame
+        result_matrix = pd.DataFrame(
+            dist_matrix,
+            index=strata_names,
+            columns=strata_names
+        )
+
+        return BetaDiversityEstimates(
+            data=result_matrix,
+            stratified_by=strata,
+            adjusted_for=meta.get("adjusted_for", 'unknown'),
+            target=target_col,
+            metric=self.metric
+        )

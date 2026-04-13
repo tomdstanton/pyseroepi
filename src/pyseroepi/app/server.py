@@ -19,6 +19,18 @@ _VAR_CATEGORIES = ('genotype', 'adjustment', 'spatial', 'temporal', 'custom')
 
 # Main server ----------------------------------------------------------------------------------------------------------
 def main_server(input: Inputs, output: Outputs, session: Session):
+    """
+    Main server logic for the pyseroepi Shiny application.
+
+    This function sets up reactive values, observers, and outputs for the
+    web-based user interface. It handles file uploads, data filtering,
+    statistical calculations, and plot rendering.
+
+    Args:
+        input: Shiny input object.
+        output: Shiny output object.
+        session: Shiny session object.
+    """
     # Reactive container for user uploaded files to be loaded ----------------------
     reactive_dataset = reactive.Value[Dataset | None](None)
 
@@ -223,7 +235,7 @@ def main_server(input: Inputs, output: Outputs, session: Session):
     @output
     @render_plotly
     def merged_plot():
-        """Renders the main combined plot (pyramid, heatmap, bars)."""
+        """Renders the main combined plotting (pyramid, heatmap, bars)."""
         # Get reactive variables
         if (r1 := prevalence()) is None or len(r1) == 0:
             return None
@@ -242,7 +254,7 @@ def main_server(input: Inputs, output: Outputs, session: Session):
     @output
     @render_plotly
     def map_plot():
-        """Renders the main combined plot (pyramid, heatmap, bars)."""
+        """Renders the main combined plotting (pyramid, heatmap, bars)."""
         if (r := prevalence_coverage()) is None or len(r) == 0:
             return None
         return  MapPlotter().plot(r)

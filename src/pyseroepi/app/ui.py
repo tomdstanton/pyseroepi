@@ -130,9 +130,9 @@ upload_panel = ui.accordion_panel(
 prevalence_panel = ui.accordion_panel(
     ui.h4("Total prevalence"),
     ui.row(
-        ui.input_selectize('heatmap_x', 'Select variable to plot heatmap', choices=[]),
+        ui.input_selectize('heatmap_x', 'Select variable to plotting heatmap', choices=[]),
         ui.input_switch('heatmap_swap_denominator', 'Swap heatmap denominator'),
-        ui.input_selectize('bars_x', 'Select variable to plot summary bars', choices=[]),
+        ui.input_selectize('bars_x', 'Select variable to plotting summary bars', choices=[]),
     ),
     output_widget('merged_plot', fill=True),
     value="prevalence_panel", icon=icon("earth-africa"), show=False
@@ -190,3 +190,4 @@ main_ui = ui.page_navbar(
     fillable=False,
     window_title="PathoGenX 🦠🧬🗺️"
 )
+"""The main Shiny UI layout for the pyseroepi application."""

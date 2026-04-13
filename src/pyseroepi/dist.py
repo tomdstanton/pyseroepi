@@ -19,21 +19,58 @@ class MetricType(Enum):
 # Classes --------------------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Distances:
+    """
+    Container for sparse distance matrices between isolates.
+
+    This class provides a memory-efficient way to store and manipulate pairwise
+    distances, supporting various metric types and conversions.
+
+    Attributes:
+        matrix (csr_array): The underlying sparse distance matrix in CSR format.
+        index (pd.Series): Sample identifiers corresponding to the matrix rows/columns.
+        metric_type (MetricType): The type of metric represented (e.g., LITERAL_DISTANCE).
+        max_value (float): The maximum possible value for the metric, used for
+            conversions between literal and normalized types.
+
+    Examples:
+        >>> import pandas as pd
+        >>> import numpy as np
+        >>> from pyseroepi.dist import Distances, MetricType
+        >>> q = pd.Series(['S1', 'S1'])
+        >>> t = pd.Series(['S2', 'S3'])
+        >>> w = pd.Series([5, 10])
+        >>> dists = Distances.from_pairwise(q, t, w)
+        >>> print(dists.matrix.toarray())
+    """
     matrix: csr_array
-    labels: pd.Series
+    index: pd.Series
     metric_type: MetricType
     max_value: float = None  # Required if converting between literal and normalised
 
     def __post_init__(self):
+        """Validates the consistency of the distance matrix and labels."""
         # Airtight check 1: Dimensions must match
         if self.matrix.shape[0] != self.matrix.shape[1]:
             raise ValueError("Distance matrix must be square.")
-        if len(self.labels) != self.matrix.shape[0]:
+        if len(self.index) != self.matrix.shape[0]:
             raise ValueError("Number of labels must match matrix dimensions.")
+        self.index.name = 'sample_id'
 
     @classmethod
     def from_pairwise(cls, query_col: pd.Series, target_col: pd.Series, weight_col: pd.Series,
                       metric_type: MetricType = MetricType.LITERAL_DISTANCE) -> Self:
+        """
+        Creates a Distances instance from long-format pairwise data.
+
+        Args:
+            query_col: Series containing the first isolate IDs.
+            target_col: Series containing the second isolate IDs.
+            weight_col: Series containing the distances/similarities.
+            metric_type: The type of metric provided. Defaults to LITERAL_DISTANCE.
+
+        Returns:
+            A new Distances instance.
+        """
         # 1. Drop to pure NumPy for speed
         q_vals = query_col.values
         t_vals = target_col.values
@@ -54,21 +91,29 @@ class Distances:
 
     @classmethod
     def from_ska2(cls, filepath_or_buffer) -> Self:
-        """A pairwise, tab delimited distance matrix from SKA2 distance command"""
+        """
+        Parses a pairwise distance matrix from SKA2 output.
+
+        Args:
+            filepath_or_buffer: Path to the SKA2 distance file.
+
+        Returns:
+            A new Distances instance.
+        """
         df = pd.read_table(filepath_or_buffer, usecols=(0, 1, 2))
         return cls.from_pairwise(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])
 
-    # @classmethod
-    # def from_mash(cls, filepath_or_buffer) -> Self:
-    #     df = pd.read_table(filepath, usecols=(0, 1, 3))
-
-    # @classmethod
-    # def from_ska1(cls, filepath_or_buffer) -> Self:
-    #     df = pd.read_table(filepath_or_buffer, usecols=(0, 1, 6))
-
     @classmethod
     def from_pathogenwatch(cls, filepath_or_buffer) -> Self:
-        """A square, comma-delimited file representing SNP-distances between core genes"""
+        """
+        Parses a square distance matrix from Pathogenwatch.
+
+        Args:
+            filepath_or_buffer: Path to the Pathogenwatch CSV file.
+
+        Returns:
+            A new Distances instance.
+        """
         df = pd.read_csv(filepath_or_buffer, index_col=0)
         M = coo_array(df.values)
         M = M.maximum(M.T)
@@ -77,13 +122,23 @@ class Distances:
     @classmethod
     def from_newick(cls, newick_string: str) -> Self:
         """
-        Parses a Newick string using Biopython and calculates patristic distances.
+        Parses a Newick string and calculates patristic distances.
+
         Requires Biopython (`pip install biopython`).
+
+        Args:
+            newick_string: The Newick tree string.
+
+        Returns:
+            A new Distances instance.
+
+        Raises:
+            ImportError: If biopython is not installed.
         """
         try:
             from Bio import Phylo
-        except ImportError as e:
-            raise ImportError("Biopython must be installed to calculate patristics (pip install biopython)") from e
+        except ImportError:
+            raise ImportError("biopython is required to calculate patristics. Install with pyseroepi[dev]")
 
         # 1. Parse the tree
         tree = Phylo.read(StringIO(newick_string), "newick")
@@ -104,38 +159,50 @@ class Distances:
                 # 4. Convert to CSR array and return as a Distances instance
         return cls(
             matrix=csr_array(matrix),
-            labels=pd.Series(labels),
+            index=pd.Series(labels),
             metric_type=MetricType.LITERAL_DISTANCE
         )
 
     def connected_components(self, threshold: int = 20) -> pd.Series:
+        """
+        Identifies connected components (clusters) based on a distance threshold.
+
+        Args:
+            threshold: Maximum distance to consider isolates as connected.
+                Defaults to 20 (e.g., 20 SNPs).
+
+        Returns:
+            A Series of cluster labels indexed by isolate IDs.
+        """
         # 1. Make a copy of the CSR array to avoid mutating the frozen original
         adj = self.matrix.copy()
-
         # 2. Convert to a binary adjacency array:
         # If distance <= threshold, make it a 1 (Valid Edge).
         # If distance > threshold, make it a 0 (Severed Edge).
         adj.data = np.where(adj.data <= threshold, 1, 0)
-
         # 3. Safely eliminate the 0s (which are now only the severed edges).
         # Your identical clones are safe because their distance of 0 was turned into a 1!
         adj.eliminate_zeros()
-
         # 4. Ensure every sample is connected to itself on the diagonal
         adj.setdiag(1)
-
         # 5. Run the clustering algorithm
         _, labels = sp_connected_components(csgraph=adj, directed=False, return_labels=True)
 
-        return pd.Series(labels, index=self.labels.values, dtype='str', name="Cluster")
+        return pd.Series(labels, index=self.index, dtype='category', name=f"connected_components_{threshold=}")
 
     def apply_clustering(self, clusterer, **kwargs) -> pd.Series:
         """
-        Applies an external clustering algorithm (like sklearn's DBSCAN)
-        to the underlying distance matrix.
+        Applies an external clustering algorithm to the distance matrix.
 
-        The clusterer MUST implement a `fit_predict` method and accept
-        'precomputed' distance matrices if it relies on distances.
+        Args:
+            clusterer: An object implementing `fit_predict` (e.g., sklearn.cluster.DBSCAN).
+            **kwargs: Additional arguments passed to `fit_predict`.
+
+        Returns:
+            A Series of cluster labels.
+
+        Raises:
+            TypeError: If the clusterer does not implement `fit_predict`.
         """
         if not hasattr(clusterer, "fit_predict"):
             raise TypeError("The provided model must implement a 'fit_predict' method.")
@@ -147,10 +214,21 @@ class Distances:
         cluster_labels = clusterer.fit_predict(distance_obj.matrix, **kwargs)
 
         # Return a pandas Series mapped to our original labels
-        return pd.Series(cluster_labels, index=self.labels.values, name="Cluster")
+        return pd.Series(cluster_labels, index=self.index, name=f"{clusterer}_cluster")
 
     def to_type(self, target_type: MetricType) -> Self:
-        """Returns a new Distances instance converted to the target metric type."""
+        """
+        Converts the distances to a different metric type.
+
+        Args:
+            target_type: The desired target MetricType.
+
+        Returns:
+            A new Distances instance with the converted matrix.
+
+        Raises:
+            ValueError: If conversion requires `max_value` but it is not set.
+        """
         if self.metric_type == target_type:
             return self
 

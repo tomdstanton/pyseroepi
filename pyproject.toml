@@ -9,18 +9,18 @@ dependencies = [
     "pyarrow",
     "numpy",
     "scipy",
-    "pandera",
+    "pandera"
 ]
 
 [dependency-groups]
-model = ["scikit-learn", "numpyro"]
+models = ["scikit-learn", "numpyro", "statsmodels", "joblib"]
 client = ["requests", "urllib3"]
 plot = ["plotly>=6.6.0", "kaleido"]
-app = [{include-group = "plot"}, "shiny", "shinywidgets"]
+app = [{include-group = "plot"}, "shiny", "shinywidgets", "shinyswatch", "itables", "htmltools"]
 test = ["pytest", "pytest-cov"]
 docs = ["zensical>=0.0.29", "mkdocstrings-python>=2.0.3"]
 dev = [
-    {include-group = "model"},
+    {include-group = "models"},
     {include-group = "client"},
     {include-group = "app"},
     {include-group = "test"},

@@ -6,6 +6,37 @@ from pandera.typing import Series
 
 # Schema & Data Stewardship --------------------------------------------------------------------------------------------
 class UnifiedIsolateSchema(pa.DataFrameModel):
+    """
+    Pandera schema for validating and standardizing isolate datasets.
+
+    This schema ensures that all input data, whether from Pathogenwatch or user
+    uploads, conforms to a unified structure for downstream analysis.
+
+    Attributes:
+        sample_id: Unique identifier for each isolate.
+        date: Isolation date (datetime64[ns]).
+        date_resolution: Precision of the isolation date ('year', 'month', 'day', 'unknown').
+        latitude: Latitude coordinate (-90 to 90).
+        longitude: Longitude coordinate (-180 to 180).
+        country: Country name.
+        region: Geographical region.
+        iso3: ISO 3166-1 alpha-3 country code.
+        spatial_resolution: Precision of spatial data.
+        ST: Multi-locus sequence type.
+        K_locus: Klebsiella K-locus.
+        O_locus: Klebsiella O-locus.
+        K_type: Predicted K-serotype.
+        O_type: Predicted O-serotype.
+        qc_metrics: Dynamic columns for quality control (prefixed with 'qc_').
+        amr_traits: Dynamic columns for AMR markers (prefixed with 'amr_').
+        vir_traits: Dynamic columns for virulence markers (prefixed with 'vir_').
+        user_metadata: Dynamic columns for user metadata (prefixed with 'meta_').
+
+    Examples:
+        >>> import pandas as pd
+        >>> df = pd.DataFrame({'sample_id': ['S1'], 'K_locus': ['KL1']})
+        >>> validated_df = UnifiedIsolateSchema.validate(df)
+    """
     # Core
     sample_id: Series["string"] = pa.Field(unique=True, coerce=True)
 
@@ -44,7 +75,12 @@ class UnifiedIsolateSchema(pa.DataFrameModel):
 
 # Parsers --------------------------------------------------------------------------------------------------------------
 class BaseParser:
-    """Base class for standardizing external datasets."""
+    """
+    Base class for standardizing external datasets.
+
+    Subclasses must define column mappings and category definitions for specific
+    input formats (e.g., Kleborate output).
+    """
 
     # Subclasses define how to map raw columns to UnifiedIsolateSchema columns
     column_map: dict[str, str] = {}
@@ -54,6 +90,16 @@ class BaseParser:
 
     @staticmethod
     def _clean_mixed_dates(df: pd.DataFrame, date_col: str = 'date') -> pd.DataFrame:
+        """
+        Standardizes mixed-format dates (YYYY, YYYY-MM, YYYY-MM-DD).
+
+        Args:
+            df: The DataFrame to clean.
+            date_col: The column containing date information. Defaults to 'date'.
+
+        Returns:
+            The DataFrame with standardized 'date' and 'date_resolution' columns.
+        """
         if date_col not in df.columns:
             return df
         s = df[date_col].copy()
@@ -80,6 +126,21 @@ class BaseParser:
     def _ingest_user_metadata(cls, meta_df: pd.DataFrame, id_col: str,
                               date_col: str = None, region_col: str = None,
                               country_col: str = None, lat_col: str = None, lon_col: str = None) -> pd.DataFrame:
+        """
+        Standardizes user-uploaded metadata.
+
+        Args:
+            meta_df: The metadata DataFrame.
+            id_col: Column name for sample IDs.
+            date_col: Column name for isolation dates.
+            region_col: Column name for regions.
+            country_col: Column name for countries.
+            lat_col: Column name for latitudes.
+            lon_col: Column name for longitudes.
+
+        Returns:
+            A cleaned metadata DataFrame with prefixed user columns.
+        """
         df = meta_df.copy()
         rename_map = {id_col: 'sample_id'}
         if date_col: rename_map[date_col] = 'date'
@@ -99,6 +160,17 @@ class BaseParser:
 
     @staticmethod
     def _optimize_categorical_dtypes(df: pd.DataFrame, threshold: float = 0.5) -> pd.DataFrame:
+        """
+        Converts string columns to categorical dtypes if cardinality is low.
+
+        Args:
+            df: The DataFrame to optimize.
+            threshold: The ratio of unique values to total rows below which
+                a column is converted to categorical. Defaults to 0.5.
+
+        Returns:
+            The optimized DataFrame.
+        """
         df_opt = df.copy()
         total_rows = len(df_opt)
         if total_rows == 0:
@@ -115,6 +187,15 @@ class BaseParser:
 
     @staticmethod
     def _optimize_binary_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Converts numeric columns containing only 0 and 1 to Int8.
+
+        Args:
+            df: The DataFrame to optimize.
+
+        Returns:
+            The optimized DataFrame.
+        """
         df_opt = df.copy()
         for col in df_opt.columns:
             if pd.api.types.is_numeric_dtype(df_opt[col]):
@@ -130,6 +211,17 @@ class BaseParser:
             meta_df: Optional[pd.DataFrame] = None,
             meta_kwargs: dict = None
     ) -> pd.DataFrame:
+        """
+        Parses and validates a genotype dataset, optionally merging with metadata.
+
+        Args:
+            genotype_df: The raw genotype DataFrame.
+            meta_df: Optional metadata DataFrame to merge.
+            meta_kwargs: Arguments for metadata ingestion (e.g., column names).
+
+        Returns:
+            A validated DataFrame conforming to UnifiedIsolateSchema.
+        """
         attrs = genotype_df.attrs
         df = genotype_df.copy()
         df = df.rename(columns=cls.column_map)
@@ -170,7 +262,12 @@ class BaseParser:
 
 
 class PathogenwatchKleborateParser(BaseParser):
-    """Adapter for the Kleborate file downloaded from Pathogenwatch."""
+    """
+    Adapter for Kleborate files downloaded from Pathogenwatch.
+
+    This parser maps Kleborate's specific column names and categories to the
+    UnifiedIsolateSchema.
+    """
     column_map = {
         'Genome Name': 'sample_id',
         'ST': 'ST',

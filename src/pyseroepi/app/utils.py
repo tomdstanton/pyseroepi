@@ -19,7 +19,7 @@ def dropdown_function(id_, *args) -> ui.Tag:
         A Shiny UI popover element.
     """
     return ui.popover(
-        ui.input_action_button(id_, "Configure plot", icon=icon("gear")),
+        ui.input_action_button(id_, "Configure plotting", icon=icon("gear")),
         *args,
         title="Options",
         placement="bottom"
@@ -72,9 +72,18 @@ def plural_name(name: str, default: str = 's', niceify: bool=False, *args, **kwa
     return name + default
 
 
-def create_logo_link(src: str, url: str, width: str, tooltip_text: str | None = None):
+def create_logo_link(src: str, url: str, width: str, tooltip_text: str | None = None) -> ui.Tag:
     """
-    Convenience function for creating a clickable image link that opens in a new tab.
+    Creates a clickable image logo link that opens in a new tab.
+
+    Args:
+        src: The path to the image source file.
+        url: The URL to link to (without 'https://').
+        width: The width of the image (e.g., '100px').
+        tooltip_text: Optional text to display as a tooltip on hover.
+
+    Returns:
+        A Shiny UI tag representing the link, optionally wrapped in a tooltip.
     """
     link_tag = ui.a(ui.img(src=src, width=width, style="vertical-align: middle;"),
                     href=f'"https://{url}', target="_blank", id=f'{Path(src).stem}_logo')
@@ -84,6 +93,16 @@ def create_logo_link(src: str, url: str, width: str, tooltip_text: str | None = 
 
 
 def app_cli_parser(subparsers, package: str, description: str, formatter_class, version):
+    """
+    Adds a sub-command for running the Shiny app to a CLI parser.
+
+    Args:
+        subparsers: The subparsers object from argparse.
+        package: The name of the package.
+        description: A description of the app.
+        formatter_class: The argparse formatter class to use.
+        version: The version string of the package.
+    """
     name, desc = 'app', 'Run the Shiny app'
     parser = subparsers.add_parser(
         name, description=description, prog=f'{package} {name}',

@@ -1,25 +1,20 @@
 from typing import Literal, Union, TypeVar, Type
 from abc import ABC, abstractmethod
 from pathlib import Path
+from joblib import dump as joblib_dump, load as joblib_load
+from warnings import warn
 from multiprocessing import cpu_count
-
 import pandas as pd
 import numpy as np
-
 from scipy.special import expit
-import scipy.stats as stats
-
+import statsmodels.api as sm
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
-from sklearn.linear_model import LogisticRegression
-
 import jax.numpy as jnp
 import jax.scipy as jsp
-from jax import random, vmap
-
+from jax import random, vmap, jit
 from numpyro import optim, distributions as dist, diagnostics as diag, sample as samp, set_host_device_count
 from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
-
-from pyseroepi.estimators import PrevalenceEstimates, BaseEstimator
+from pyseroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
 
 
 # Set-up ---------------------------------------------------------------------------------------------------------------
@@ -31,17 +26,28 @@ set_host_device_count(min(cpu_count(), 4))
 T_Modelled = TypeVar('T_Modelled', bound='ModelledMixin')
 
 
-# ABCs -----------------------------------------------------------------------------------------------------------------
+# TypeVars -------------------------------------------------------------------------------------------------------------
 class ModelledMixin(ABC):
     """
     Contract for estimators with an internal fitted state.
-    Enforces the scikit-learn fit/predict paradigm.
+
+    Enforces the scikit-learn fit/predict paradigm and provides universal
+    serialization for fitted models.
+
+    Attributes:
+        is_fitted_: Boolean indicating if the model has been fitted.
     """
 
     # State tracking
     is_fitted_: bool = False
 
     def check_is_fitted(self):
+        """
+        Checks if the model is fitted.
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+        """
         if not self.is_fitted_:
             raise RuntimeError(
                 "This estimator instance is not fitted yet. "
@@ -58,22 +64,82 @@ class ModelledMixin(ABC):
         """Uses the fitted internal state to generate predictions on the dataframe."""
         pass
 
-    @abstractmethod
     def save_model(self, filepath: Union[str, Path]) -> None:
-        pass
+        """
+        Universally serializes the fitted estimator instance to disk.
+
+        Args:
+            filepath: Path where the model should be saved.
+        """
+        if not self.is_fitted_:
+            warn(f"You are saving a {self.__class__.__name__} that hasn't been fitted yet.")
+
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib_dump(self, path)
 
     @classmethod
-    @abstractmethod
     def load_model(cls: Type[T_Modelled], filepath: Union[str, Path]) -> T_Modelled:
-        pass
+        """
+        Loads a serialized estimator from disk.
+
+        Args:
+            filepath: Path to the serialized model file.
+
+        Returns:
+            The loaded estimator instance.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+            TypeError: If the loaded model is not of the expected type.
+        """
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"No model found at {path}")
+
+        estimator = joblib_load(path)
+
+        # Strict Type Guard
+        if not isinstance(estimator, cls):
+            raise TypeError(
+                f"Type mismatch: Attempted to load into {cls.__name__}, "
+                f"but the file contains a {type(estimator).__name__}."
+            )
+
+        return estimator
 
 
 # Estimators -----------------------------------------------------------------------------------------------------------
 class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
+    """
+    Bayesian hierarchical model for prevalence estimation.
+
+    This estimator uses MCMC or SVI to fit a binomial model with random effects
+    for groups and fixed effects for targets. It handles overdispersion and
+    provides credible intervals.
+
+    Examples:
+        >>> from pyseroepi.estimators.modelled import BayesianPrevalenceEstimator
+        >>> estimator = BayesianPrevalenceEstimator(method='mcmc')
+        >>> # result = estimator.calculate(agg_df)
+    """
     Method = Literal['mcmc', 'svi']
 
     def __init__(self, method: Method = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000, target_event='event', target_n='n', seed: int = 42):
+        """
+        Initializes the BayesianPrevalenceEstimator.
+
+        Args:
+            method: Inference method ('mcmc' or 'svi'). Defaults to 'mcmc'.
+            num_samples: Number of posterior samples to draw. Defaults to 1500.
+            num_chains: Number of MCMC chains. Defaults to 4.
+            num_warmup: Number of warmup steps for MCMC. Defaults to 1000.
+            svi_steps: Number of optimization steps for SVI. Defaults to 3000.
+            target_event: Column name for event counts. Defaults to 'event'.
+            target_n: Column name for total counts (denominators). Defaults to 'n'.
+            seed: Random seed for reproducibility. Defaults to 42.
+        """
         self.method = method
         self._method_label = f'bayesian_{self.method}'
         self._method_func = self._METHODS.get(self.method, None)
@@ -96,6 +162,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         self.meta_ = {}
 
     def _model(self, target_idx, group_idx, n, n_targets, n_groups, event=None):
+        """Internal NumPyro model definition."""
         # 1. Global Intercept (Regularized)
         alpha = samp("alpha", dist.Normal(0, 1.5))
 
@@ -114,11 +181,13 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         samp("obs", dist.Binomial(total_count=n, logits=logit_p), obs=event)
 
     def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Runs MCMC inference using NUTS."""
         mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples, num_chains=self.num_chains)
         mcmc.run(rng_key, **jax_data)
         return mcmc.get_samples()
 
     def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Runs Stochastic Variational Inference."""
         opt_key, pred_key = random.split(rng_key)
         guide = autoguide.AutoNormal(self._model)
         optimizer = optim.Adam(step_size=0.01)
@@ -128,7 +197,15 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         return predictive(pred_key, **jax_data)
 
     def fit(self, agg_df: pd.DataFrame) -> 'BayesianPrevalenceEstimator':
-        """Step 1: Parse data, fit encoders, and run inference to get samples."""
+        """
+        Parses data, fits encoders, and runs inference to get posterior samples.
+
+        Args:
+            agg_df: The aggregated DataFrame.
+
+        Returns:
+            The fitted estimator instance.
+        """
         self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n])
 
         if len(self.strata_) < 2:
@@ -161,7 +238,15 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         return self
 
     def predict(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
-        """Step 2: Use the fitted samples and encoders to calculate bounds."""
+        """
+        Uses the fitted samples and encoders to calculate prevalence bounds.
+
+        Args:
+            agg_df: The DataFrame to generate predictions for.
+
+        Returns:
+            A PrevalenceEstimates object.
+        """
         self.check_is_fitted()
 
         group_col = self.strata_[0]
@@ -194,16 +279,18 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=self.strata_,
+            adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
             prevalence_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
 
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
-        """The frictionless one-liner to fulfill the BaseEstimator contract."""
+        """One-liner to fit and predict on the same data."""
         return self.fit(agg_df).predict(agg_df)
 
     def diagnostics(self):
+        """Prints MCMC diagnostics (R-hat, ESS) to the console."""
         self.check_is_fitted()
         if self.method != 'mcmc':
             print("Diagnostics are only available for MCMC inference.")
@@ -212,172 +299,124 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         # NumPyro's built-in summary prints R-hat and ESS directly to the console
         print(diag.print_summary(self.samples_, prob=0.95, group_by_chain=False))
 
-    def save_model(self, filepath: Union[str, Path]) -> None:
-        self.check_is_fitted()
-        config = {
-            'method': self.method, 'num_samples': self.num_samples, 'num_chains': self.num_chains,
-            'num_warmup': self.num_warmup, 'svi_steps': self.svi_steps, 'target_event': self.target_event,
-            'target_n': self.target_n, 'seed': self.seed
-        }
-
-        # We package the config, the raw dictionary of LabelEncoders, strata, and samples
-        np.savez(filepath, config=config, encoders=self.encoders_,
-                 strata=self.strata_, meta=self.meta_, samples=self.samples_)
-
-    @classmethod
-    def load_model(cls, filepath: Union[str, Path]) -> 'BayesianPrevalenceEstimator':
-        data = np.load(filepath, allow_pickle=True)
-
-        # Instantiate fresh with old hyperparams
-        estimator = cls(**data['config'].item())
-
-        # Inject fitted state
-        estimator.samples_ = data['samples'].item()
-        estimator.encoders_ = data['encoders'].item()
-        estimator.strata_ = data['strata'].tolist()
-        estimator.meta_ = data['meta'].item()
-        estimator.is_fitted_ = True
-
-        return estimator
-
     _METHODS = {'mcmc': _mcmc_inference, 'svi': _svi_inference}
 
 
 class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
-    def __init__(self, target_event='event', target_n='n'):
+    """
+    Frequentist binomial GLM for prevalence estimation.
+
+    Uses statsmodels to fit a Generalized Linear Model with a binomial family
+    and logit link.
+
+    Examples:
+        >>> from pyseroepi.estimators.modelled import RegressionPrevalenceEstimator
+        >>> estimator = RegressionPrevalenceEstimator()
+        >>> # result = estimator.calculate(agg_df)
+    """
+    def __init__(self, target_event: str = 'event', target_n: str = 'n'):
+        """
+        Initializes the RegressionPrevalenceEstimator.
+
+        Args:
+            target_event: Column name for event counts. Defaults to 'event'.
+            target_n: Column name for total counts. Defaults to 'n'.
+        """
         self.target_event = target_event
         self.target_n = target_n
-        self._method_label = 'regression_logistic'
-
-        # Fitted attributes
-        self.model_ = None
-        self.encoder_ = None
-        self.cov_matrix_ = None
-        self.strata_ = []
-        self.meta_ = {}
+        self._method_label = "binomial_glm"
 
     def fit(self, agg_df: pd.DataFrame) -> 'RegressionPrevalenceEstimator':
+        """Fits the binomial GLM."""
         self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n])
 
-        if not self.strata_:
-            raise ValueError("Regression estimator requires at least one stratification level.")
-
-        # 1. Fit the encoder ONCE on the raw, unduplicated data
+        # 1. Fit the encoder (We still use sklearn here because statsmodels' categorical handling can be clunky)
         self.encoder_ = OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore')
-        X_base = self.encoder_.fit_transform(agg_df[self.strata_])
+        X_encoded = self.encoder_.fit_transform(agg_df[self.strata_])
 
-        # 2. Duplicate the numerical matrix instantly using numpy
-        X_train = np.vstack([X_base, X_base])
+        # Add the intercept
+        X = sm.add_constant(X_encoded)
 
-        # 3. Create the Targets (1s then 0s) and Weights directly from the arrays
-        n_rows = len(agg_df)
-        y_train = np.concatenate([np.ones(n_rows, dtype=int), np.zeros(n_rows, dtype=int)])
+        # 2. The Statsmodels Magic: Just pass [Successes, Failures] directly!
+        successes = agg_df[self.target_event].values
+        failures = agg_df[self.target_n].values - successes
+        Y = np.column_stack((successes, failures))
 
-        success_weights = agg_df[self.target_event].values
-        fail_weights = (agg_df[self.target_n] - agg_df[self.target_event]).values
-        weights = np.concatenate([success_weights, fail_weights])
-
-        # 4. Filter out any 0-weight rows to save regression compute time
-        valid_mask = weights > 0
-        X_train = X_train[valid_mask]
-        y_train = y_train[valid_mask]
-        weights = weights[valid_mask]
-
-        # 5. Fit standard Logistic Regression
-        self.model_ = LogisticRegression(penalty=None, solver='lbfgs', max_iter=1000)
-        self.model_.fit(X_train, y_train, sample_weight=weights)
-
-        # 6. Calculate the Covariance Matrix for Confidence Intervals
-        X_design = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
-        p = self.model_.predict_proba(X_train)[:, 1]
-
-        W = p * (1 - p) * weights
-        fisher_info = X_design.T @ (W[:, None] * X_design)
-        self.cov_matrix_ = np.linalg.pinv(fisher_info)
+        # 3. Fit the Binomial GLM safely
+        # It handles the Fisher Information / Hessian inversion automatically
+        glm_model = sm.GLM(Y, X, family=sm.families.Binomial())
+        self.fit_results_ = glm_model.fit()
 
         self.is_fitted_ = True
         return self
 
     def predict(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
+        """Generates predictions and confidence intervals."""
         self.check_is_fitted()
 
-        # 1. Encode the incoming data
-        X_test = self.encoder_.transform(agg_df[self.strata_])
-        X_design_test = np.hstack([np.ones((X_test.shape[0], 1)), X_test])
+        # Transform new data
+        X_encoded = self.encoder_.transform(agg_df[self.strata_])
+        X = sm.add_constant(X_encoded, has_constant='add')
 
-        # 2. Get Point Estimates (Adjusted Prevalence)
-        estimates = self.model_.predict_proba(X_test)[:, 1]
-
-        # 3. Calculate Confidence Intervals using the Covariance Matrix
-        # Variance on the logit (link) scale
-        var_link = np.sum((X_design_test @ self.cov_matrix_) * X_design_test, axis=1)
-        se_link = np.sqrt(var_link)
-
-        # Get the linear predictor (logit) values
-        linear_predictor = self.model_.decision_function(X_test)
-
-        # Calculate 95% Wald CI on the link scale, then expit back to probability scale
-        z = stats.norm.ppf(0.975)
-        lower = expit(linear_predictor - z * se_link)
-        upper = expit(linear_predictor + z * se_link)
+        # statsmodels natively handles the delta method and inverse-link transformations
+        predictions = self.fit_results_.get_prediction(X).summary_frame(alpha=0.05)
 
         new_cols = {
-            'estimate': np.array(estimates),
-            'lower': np.array(lower),
-            'upper': np.array(upper),
+            'estimate': predictions['mean'].values,
+            'lower': predictions['mean_ci_lower'].values,
+            'upper': predictions['mean_ci_upper'].values,
             'method': self._method_label
         }
 
-        # 2. Fast horizontal concatenation (ignores the deep copy overhead)
-        result_df = pd.concat([agg_df, pd.DataFrame(new_cols, index=agg_df.index)], axis=1)
+        result_df = pd.concat([agg_df.copy(), pd.DataFrame(new_cols, index=agg_df.index)], axis=1)
 
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=self.strata_,
+            adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
             prevalence_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
 
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
+        """One-liner to fit and predict."""
         return self.fit(agg_df).predict(agg_df)
-
-    def save_model(self, filepath: Union[str, Path]) -> None:
-        self.check_is_fitted()
-        config = {
-            'target_event': self.target_event,
-            'target_n': self.target_n
-        }
-
-        # np.savez securely packages everything, including the sklearn model (via pickle)
-        np.savez(filepath, config=config,
-                 model=self.model_, encoder=self.encoder_,
-                 cov_matrix=self.cov_matrix_, strata=self.strata_, meta=self.meta_)
-
-    @classmethod
-    def load_model(cls, filepath: Union[str, Path]) -> 'RegressionPrevalenceEstimator':
-        data = np.load(filepath, allow_pickle=True)
-
-        estimator = cls(**data['config'].item())
-
-        # Inject fitted state
-        estimator.model_ = data['model'].item()
-        estimator.encoder_ = data['encoder'].item()
-        estimator.cov_matrix_ = data['cov_matrix']
-        estimator.strata_ = data['strata'].tolist()
-        estimator.meta_ = data['meta'].item()
-        estimator.is_fitted_ = True
-
-        return estimator
 
 
 class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
+    """
+    Gaussian Process (GP) based spatial prevalence estimator.
+
+    Fits a GP model to spatial binomial data, allowing for continuous mapping
+    of prevalence across a geographic area.
+
+    Examples:
+        >>> from pyseroepi.estimators.modelled import SpatialPrevalenceEstimator
+        >>> estimator = SpatialPrevalenceEstimator(lat_col='lat', lon_col='lon')
+        >>> # result = estimator.calculate(agg_df)
+    """
     Method = Literal['mcmc', 'svi']
 
     def __init__(self, lat_col: str = 'lat', lon_col: str = 'lon',
                  method: Method = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000,
                  target_event='event', target_n='n', seed: int = 42):
+        """
+        Initializes the SpatialPrevalenceEstimator.
+
+        Args:
+            lat_col: Column name for latitude. Defaults to 'lat'.
+            lon_col: Column name for longitude. Defaults to 'lon'.
+            method: Inference method. Defaults to 'mcmc'.
+            num_samples: Number of samples. Defaults to 1500.
+            num_chains: Number of chains. Defaults to 4.
+            num_warmup: Number of warmup steps. Defaults to 1000.
+            svi_steps: Number of SVI steps. Defaults to 3000.
+            target_event: Column for events. Defaults to 'event'.
+            target_n: Column for totals. Defaults to 'n'.
+            seed: Random seed. Defaults to 42.
+        """
         self.lat_col = lat_col
         self.lon_col = lon_col
         self.method = method
@@ -399,6 +438,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         self.meta_ = {}
 
     def _model(self, X, n, event=None):
+        """Internal NumPyro GP model."""
         # 1. Global Intercept
         alpha = samp("alpha", dist.Normal(0, 1.5))
 
@@ -448,8 +488,13 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
 
     def predict(self, df: pd.DataFrame) -> PrevalenceEstimates:
         """
-        Calculates the conditional predictive posterior for ANY set of coordinates.
-        This allows you to pass a meshgrid of points to draw a continuous map!
+        Calculates the conditional predictive posterior for any set of coordinates.
+
+        Args:
+            df: DataFrame containing latitude and longitude columns.
+
+        Returns:
+            A PrevalenceEstimates object with predicted values at the locations.
         """
         self.check_is_fitted()
 
@@ -473,7 +518,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             return alpha + f_star
 
         # 3. Use JAX vmap to instantly vectorize this complex math across all 1500 samples!
-        vectorized_predict = vmap(predict_single_sample)
+        vectorized_predict = jit(vmap(predict_single_sample))
 
         logit_p_draws = vectorized_predict(
             self.samples_['var'],
@@ -497,6 +542,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=[self.lat_col, self.lon_col],
+            adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
             prevalence_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
@@ -504,12 +550,14 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
 
     # --- Standard Inference Wrappers (Inherited/Shared Logic) ---
     def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Internal MCMC wrapper."""
         mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
                     num_chains=self.num_chains)
         mcmc.run(rng_key, **jax_data)
         return mcmc.get_samples()
 
     def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Internal SVI wrapper."""
         opt_key, pred_key = random.split(rng_key)
         guide = autoguide.AutoNormal(self._model)
         optimizer = optim.Adam(step_size=0.01)
@@ -519,31 +567,138 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         return predictive(pred_key, **jax_data)
 
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
+        """One-liner to fit and predict."""
         return self.fit(agg_df).predict(agg_df)
 
-    def save_model(self, filepath: Union[str, Path]) -> None:
-        self.check_is_fitted()
-        config = {
-            'lat_col': self.lat_col, 'lon_col': self.lon_col, 'method': self.method,
-            'num_samples': self.num_samples, 'num_chains': self.num_chains,
-            'num_warmup': self.num_warmup, 'svi_steps': self.svi_steps,
-            'target_event': self.target_event, 'target_n': self.target_n, 'seed': self.seed
-        }
-        np.savez(filepath, config=config, X_train=self.X_train_,
-                 loc_mean=self.loc_mean_, loc_scale=self.loc_scale_,
-                 meta=self.meta_, samples=self.samples_)
 
-    @classmethod
-    def load_model(cls, filepath: Union[str, Path]) -> 'SpatialPrevalenceEstimator':
-        data = np.load(filepath, allow_pickle=True)
-        estimator = cls(**data['config'].item())
-        estimator.X_train_ = data['X_train']
-        estimator.loc_mean_ = data['loc_mean']
-        estimator.loc_scale_ = data['loc_scale']
-        estimator.samples_ = data['samples'].item()
-        estimator.meta_ = data['meta'].item()
-        estimator.is_fitted_ = True
-        return estimator
+class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMixin):
+    """
+    Negative Binomial GLM for time-series incidence estimation.
+
+    Fits a Negative Binomial model to count data over time, optionally
+    adjusting for sequencing volume (relative incidence).
+
+    Examples:
+        >>> from pyseroepi.estimators.modelled import RegressionIncidenceEstimator
+        >>> estimator = RegressionIncidenceEstimator(use_relative_incidence=True)
+        >>> # result = estimator.calculate(inc_df)
+    """
+    def __init__(self, use_relative_incidence: bool = True):
+        """
+        Initializes the RegressionIncidenceEstimator.
+
+        Args:
+            use_relative_incidence: If True, models cases adjusting for total
+                sequencing volume (offset). If False, models absolute counts.
+        """
+        self.use_relative_incidence = use_relative_incidence
+        self._method_label = "neg_binomial_glm"
+
+        # Internal state tracking
+        self.fit_results_ = {}
+        self.strata_ = []
+        self.meta_ = {}
+
+    def fit(self, inc_df: pd.DataFrame) -> 'RegressionIncidenceEstimator':
+        """Fits the Negative Binomial GLM to each stratum."""
+        self.meta_ = inc_df.attrs.get("incidence_meta", {})
+        target_col = self.meta_.get("target")
+        self.freq_ = self.meta_.get("freq")
+        self.strata_ = self.meta_.get("stratified_by", [])
+
+        if not target_col or not self.freq_:
+            raise ValueError("Incidence metadata missing. Ensure data came from `epi.aggregate_incidence`.")
+
+        # Sort entirely upstream to avoid O(N log N) operations inside the loop
+        inc_df_sorted = inc_df.sort_values('date')
+        groups = inc_df_sorted.groupby(self.strata_, observed=True) if self.strata_ else [('Global', inc_df_sorted)]
+
+        for name, group in groups:
+            # Drop the .sort_values() here. Just copy.
+            df_group = group.copy()
+
+            # Filter out periods with ZERO sequencing volume for the GLM fit
+            df_model = df_group[df_group['total_sequenced'] > 0].copy()
+
+            if len(df_model) < 3:
+                self.fit_results_[name] = None  # Not enough data to model
+                continue
+
+            # Create a numeric Time Step for the slope
+            time_deltas = df_model['date'] - df_model['date'].min()
+
+            if self.freq_.startswith('M'):
+                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'M'))
+            elif self.freq_.startswith('W'):
+                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'W'))
+            elif self.freq_.startswith('Y'):
+                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'Y'))
+            else:
+                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'D'))
+
+            Y = df_model['variant_count']
+            X = sm.add_constant(df_model['time_step'])
+
+            offset = np.log(df_model['total_sequenced']) if self.use_relative_incidence else None
+
+            try:
+                # alpha=1.0 is a robust starting guess for overdispersion
+                model = sm.GLM(Y, X, family=sm.families.NegativeBinomial(alpha=1.0), offset=offset)
+                self.fit_results_[name] = model.fit()
+            except Exception as e:
+                warn(f"GLM failed to converge for stratum {name}: {e}")
+                self.fit_results_[name] = None
+
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, inc_df: pd.DataFrame) -> IncidenceEstimates:
+        """Extracts Incidence Rate Ratios (IRR) and intervals."""
+        self.check_is_fitted()
+
+        groups = inc_df.groupby(self.strata_, observed=True) if self.strata_ else [('Global', inc_df)]
+        results = []
+
+        for name, _ in groups:
+            fit = self.fit_results_.get(name)
+
+            row = {k: v for k, v in zip(self.strata_, name)} if self.strata_ and isinstance(name, tuple) else {}
+            if self.strata_ and not isinstance(name, tuple):
+                row = {self.strata_[0]: name}
+
+            if fit is None:
+                row.update({
+                    'IRR': np.nan, 'IRR_lower': np.nan, 'IRR_upper': np.nan,
+                    'p_value': np.nan, 'status': 'Failed/Insufficient Data'
+                })
+            else:
+                coef = fit.params.get('time_step', 0)
+                p_val = fit.pvalues.get('time_step', 1.0)
+                ci_lower = fit.conf_int()[0].get('time_step', 0)
+                ci_upper = fit.conf_int()[1].get('time_step', 0)
+
+                row.update({
+                    'IRR': np.exp(coef),
+                    'IRR_lower': np.exp(ci_lower),
+                    'IRR_upper': np.exp(ci_upper),
+                    'p_value': p_val,
+                    'status': 'Converged'
+                })
+            results.append(row)
+
+        return IncidenceEstimates(
+            data=inc_df.copy(),
+            stratified_by=self.strata_,
+            adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
+            target=self.meta_.get("target", "unknown"),
+            freq=self.freq_,
+            incidence_type=self.meta_.get("type", "unknown"),
+            model_results=pd.DataFrame(results)
+        )
+
+    def calculate(self, inc_df: pd.DataFrame) -> IncidenceEstimates:
+        """One-liner to fit and predict."""
+        return self.fit(inc_df).predict(inc_df)
 
 
 # Kernels --------------------------------------------------------------------------------------------------------------

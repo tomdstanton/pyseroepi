@@ -1,6 +1,9 @@
-import geopandas as gpd
 import pprint
 from pathlib import Path
+try:
+    import geopandas as gpd
+except ImportError:
+    raise ImportError("geopandas is required for reverse geocoding. Install with pyseroepi[spatial]")
 
 
 def main():

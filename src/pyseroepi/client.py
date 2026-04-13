@@ -13,13 +13,31 @@ import concurrent.futures
 class PathogenwatchClient:
     """
     Client for the Pathogenwatch Next API.
-    Handles automatic retries, rate limiting, and pagination.
+
+    Handles automatic retries, rate limiting, and pagination. It uses a session
+    with a retry strategy to handle common transient errors and rate limits.
+
+    Attributes:
+        session (requests.Session): The underlying requests session with retry strategy.
+
+    Examples:
+        >>> from pyseroepi.client import PathogenwatchClient
+        >>> with PathogenwatchClient(api_key="your_api_key") as client:
+        ...     collections = list(client.get_collections(limit=5))
+        ...     for collection in collections:
+        ...         print(collection.name)
     """
     _BASE = "https://next.pathogen.watch/api/"
     _COLLECTIONS_ENDPOINT = "collections/list"
     _FOLDERS_ENDPOINT = "folders/list"
 
     def __init__(self, api_key: str):
+        """
+        Initializes the PathogenwatchClient with an API key.
+
+        Args:
+            api_key: The API key for Pathogenwatch Next.
+        """
         self.session = requests.Session()
         
         # Set authentication
@@ -41,15 +59,22 @@ class PathogenwatchClient:
         self.session.mount("https://", adapter)
 
     def __enter__(self):
+        """Context manager entry."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit, closes the session."""
         self.session.close()
 
     def prefetch(self, items: Iterable['PathogenwatchContainerMixin'], max_workers: int = 10) -> None:
         """
-        Concurrently populates the details and genomes cache for multiple collections/folders.
+        Concurrently populates the details and genomes cache for multiple collections or folders.
+
         Uses thread pooling to fetch in parallel while urllib3 safely handles 429 rate limit backoffs.
+
+        Args:
+            items: An iterable of PathogenwatchCollection or PathogenwatchFolder objects.
+            max_workers: Maximum number of concurrent threads. Defaults to 10.
         """
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submitting item.get_genomes naturally triggers item.get_details 
@@ -59,12 +84,39 @@ class PathogenwatchClient:
                 future.result()  # Raise any exceptions encountered during fetching
 
     def request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        """
+        Sends an HTTP request to the Pathogenwatch API.
+
+        Args:
+            method: HTTP method (e.g., 'GET', 'POST').
+            endpoint: API endpoint path.
+            **kwargs: Additional arguments passed to requests.request.
+
+        Returns:
+            The HTTP response.
+
+        Raises:
+            requests.HTTPError: If the request returned an error status code.
+        """
         url = f"{self._BASE}/{endpoint.lstrip('/')}"
         with self.session.request(method, url, **kwargs) as response:
             response.raise_for_status() # Automatically raises an error for 4xx/5xx responses
             return response
 
     def get(self, endpoint: str, **kwargs) -> requests.Response:
+        """
+        Sends a GET request to the Pathogenwatch API.
+
+        Args:
+            endpoint: API endpoint path.
+            **kwargs: Additional arguments passed to requests.get.
+
+        Returns:
+            The HTTP response.
+
+        Raises:
+            requests.HTTPError: If the request returned an error status code.
+        """
         url = f"{self._BASE}/{endpoint.lstrip('/')}"
         with self.session.get(url, **kwargs) as response:
             response.raise_for_status() # Automatically raises an error for 4xx/5xx responses
@@ -72,6 +124,17 @@ class PathogenwatchClient:
 
     def get_collections(self, exclude: str = None, limit: int = None, binned: bool = None
     ) -> Generator['PathogenwatchCollection', None, None]:
+        """
+        Retrieves collections from Pathogenwatch.
+
+        Args:
+            exclude: Collections to exclude.
+            limit: Maximum number of collections to retrieve.
+            binned: Whether to include binned collections.
+
+        Yields:
+            PathogenwatchCollection: The next collection retrieved.
+        """
         params = {k: v for k, v in [("exclude", exclude), ("limit", limit),
                                     ("binned", str(binned).lower() if binned is not None else None)] if
                   v is not None}
@@ -82,6 +145,17 @@ class PathogenwatchClient:
 
     def get_folders(self, exclude: str = None, limit: int = None, binned: bool = None
                     ) -> Generator['PathogenwatchFolder', None, None]:
+        """
+        Retrieves folders from Pathogenwatch.
+
+        Args:
+            exclude: Folders to exclude.
+            limit: Maximum number of folders to retrieve.
+            binned: Whether to include binned folders.
+
+        Yields:
+            PathogenwatchFolder: The next folder retrieved.
+        """
         params = {k: v for k, v in [("exclude", exclude), ("limit", limit),
                                     ("binned", str(binned).lower() if binned is not None else None)] if
                   v is not None}
@@ -91,10 +165,10 @@ class PathogenwatchClient:
             yield PathogenwatchFolder(**{k: v for k, v in folder_dict.items() if k in valid_keys})
 
 
-
 class PathogenwatchContainerMixin:
     """
     Mixin providing shared fetching logic for Pathogenwatch Collection and Folder dataclasses.
+
     Classes using this mixin must define _ENTITY_TYPE, _DETAILS_QUERY_PARAM,
     _GENOMES_ID_PARAM, _GENOMES_CURSOR_PARAM, and _ATTR_PREFIX.
     """
@@ -105,39 +179,71 @@ class PathogenwatchContainerMixin:
     _ATTR_PREFIX: ClassVar[str]
 
     def get_details(self, client: PathogenwatchClient) -> dict:
-     if self._details_cache is None:
-         details = client.get(f"{self._ENTITY_TYPE}/details", params={self._DETAILS_QUERY_PARAM: self.uuid}).json()
-         object.__setattr__(self, '_details_cache', details)
-     return self._details_cache
+        """
+        Fetches detailed information for the container.
+
+        Args:
+            client: An instance of PathogenwatchClient.
+
+        Returns:
+            A dictionary containing the details.
+        """
+        if self._details_cache is None:
+            details = client.get(f"{self._ENTITY_TYPE}/details", params={self._DETAILS_QUERY_PARAM: self.uuid}).json()
+            object.__setattr__(self, '_details_cache', details)
+        return self._details_cache
 
     def get_genomes(self, client: PathogenwatchClient, limit: int = 1000) -> list[dict]:
+        """
+        Fetches all genomes associated with this container.
 
-     internal_id = self.get_details(client).get('id')
-     if not internal_id:
-         raise ValueError(f"Could not resolve internal ID for {self._ENTITY_TYPE[:-1]} {self.uuid}")
+        Args:
+            client: An instance of PathogenwatchClient.
+            limit: Number of genomes to fetch per request for pagination. Defaults to 1000.
 
-     all_genomes = []
-     cursor = None
+        Returns:
+            A list of dictionaries, each representing a genome.
 
-     while True:
-         params = {self._GENOMES_ID_PARAM: internal_id, "limit": limit}
-         if cursor:
-             params[self._GENOMES_CURSOR_PARAM] = cursor
+        Raises:
+            ValueError: If the internal ID for the container cannot be resolved.
+        """
 
-         data = client.get(f"{self._ENTITY_TYPE}/genomes", params=params).json()
-         all_genomes.extend(data.get("genomes", []))
+        internal_id = self.get_details(client).get('id')
+        if not internal_id:
+            raise ValueError(f"Could not resolve internal ID for {self._ENTITY_TYPE[:-1]} {self.uuid}")
 
-         cursor = data.get("meta", {}).get("endCursor")
-         if not cursor or data.get("meta", {}).get("empty"):
-             break
+        all_genomes = []
+        cursor = None
 
-     return all_genomes
+        while True:
+            params = {self._GENOMES_ID_PARAM: internal_id, "limit": limit}
+            if cursor:
+                params[self._GENOMES_CURSOR_PARAM] = cursor
+
+            data = client.get(f"{self._ENTITY_TYPE}/genomes", params=params).json()
+            all_genomes.extend(data.get("genomes", []))
+
+            cursor = data.get("meta", {}).get("endCursor")
+            if not cursor or data.get("meta", {}).get("empty"):
+                break
+
+        return all_genomes
 
 
 @dataclass(frozen=True, slots=True)
 class PathogenwatchCollection(PathogenwatchContainerMixin):
     """
     A lazy-loaded proxy object representing a single Pathogenwatch collection.
+
+    Attributes:
+        binned: Whether the collection is binned.
+        createdAt: Creation timestamp.
+        description: Collection description.
+        name: Collection name.
+        organismId: ID of the organism.
+        owner: Owner of the collection.
+        uuid: Unique identifier for the collection.
+        size: Number of genomes in the collection.
     """
     _ENTITY_TYPE: ClassVar[str] = "collections"
     _DETAILS_QUERY_PARAM: ClassVar[str] = "uuid"
@@ -160,6 +266,14 @@ class PathogenwatchCollection(PathogenwatchContainerMixin):
 class PathogenwatchFolder(PathogenwatchContainerMixin):
     """
     A lazy-loaded proxy object representing a single Pathogenwatch folder.
+
+    Attributes:
+        createdAt: Creation timestamp.
+        id: Internal folder ID.
+        uuid: Unique identifier for the folder.
+        access: Access level.
+        name: Folder name.
+        binned: Whether the folder is binned.
     """
     _ENTITY_TYPE: ClassVar[str] = "folders"
     _DETAILS_QUERY_PARAM: ClassVar[str] = "id"
@@ -175,17 +289,3 @@ class PathogenwatchFolder(PathogenwatchContainerMixin):
     binned: bool = False
     _details_cache: Optional[dict] = field(default=None, init=False, repr=False, compare=False)
 
-
-# def test():
-#     client = PathogenwatchClient('')
-#     collections = list(client.get_collections())
-#     collection = next((i for i in collections if 'sepsis' in i.name), None)
-#     genomes = collection.get_genomes(client)
-#
-#     # dist = Distances.from_pathogenwatch()
-#
-#     # from pyseroepi import PathogenwatchParser
-#     # df = PathogenwatchParser().from_records(genomes)
-#     import pandas as pd
-#     df = pd.DataFrame(genomes).set_index("id")
-#
