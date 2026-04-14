@@ -4,9 +4,10 @@ import plotly.graph_objects as go
 from pyseroepi.plotting._base import BasePlotter
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # Delay import to avoid circular dependencies
-    from pyseroepi.estimators._base import (PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates,
-                                            IncidenceEstimates)
+    from pyseroepi.estimators import (PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates,
+                                        IncidenceEstimates)
     from pyseroepi.formulation import Formulation
+
 
 # Classes --------------------------------------------------------------------------------------------------------------
 @BasePlotter.register_plotter(PrevalenceEstimates, 'forest')
@@ -54,7 +55,7 @@ class ForestPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'epicurve')
+@BasePlotter.register_plotter(IncidenceEstimates, 'epicurve')
 class EpicurvePlotter(BasePlotter):
 
     @classmethod
@@ -350,11 +351,11 @@ class SpatialSurfacePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'alpha_diversity')
+@BasePlotter.register_plotter(AlphaDiversityEstimates, 'alpha_diversity')
 class AlphaDiversityPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates',  metric: str = 'shannon',
+    def render(cls, result: 'AlphaDiversityEstimates',  metric: str = 'shannon',
                     sort_ascending: bool = False) -> go.Figure:
         """
         Plots a glowing lollipop chart for within-group diversity.
@@ -400,7 +401,7 @@ class AlphaDiversityPlotter(BasePlotter):
 
         return fig.update_layout(
             dict1=cls._THEME,
-            title=f"<b>Alpha Diversity ({metric.title()})</b><br><sup>Target: {result.target_trait}</sup>",
+            title=f"<b>Alpha Diversity ({metric.title()})</b><br><sup>Target: {result.target}</sup>",
             xaxis=dict(title=group_col.title() if group_col != 'Global' else ''),
             yaxis=dict(title=f'{metric.title()} Index', rangemode='tozero'),  # Stems must anchor to 0
             showlegend=False
@@ -408,16 +409,16 @@ class AlphaDiversityPlotter(BasePlotter):
 
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'beta_heatmap')
+@BasePlotter.register_plotter(BetaDiversityEstimates, 'beta_heatmap')
 class BetaHeatmapPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', mask_upper: bool = True) -> go.Figure:
+    def render(cls, result: 'BetaDiversityEstimates', mask_upper: bool = True) -> go.Figure:
         """
         Plots an N x N dissimilarity matrix.
         If mask_upper is True, perfectly formats it as an academic lower-triangle heatmap.
         """
-        dist_matrix = result.distance_matrix.copy()
+        dist_matrix = result.data.copy()
 
         # The Pro-Move: Mask the upper triangle and the diagonal
         if mask_upper:
@@ -460,11 +461,11 @@ class BetaHeatmapPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'rank_stability_bump')
+@BasePlotter.register_plotter(Formulation, 'rank_stability_bump')
 class RankStabilityBumpPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, formulation: 'Formulation') -> go.Figure:
+    def render(cls, formulation: 'Formulation', **kwargs) -> go.Figure:
         """
         Plots a Slopegraph (Bump Chart) showing how antigen ranks shift
         when different data groups are held out.

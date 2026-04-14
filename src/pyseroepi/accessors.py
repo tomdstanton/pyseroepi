@@ -1,12 +1,15 @@
-from typing import Union
+"""
+Module to handle epidemiological, geospatial and genotypic operations on isolate datasets in the form of Pandas
+DataFrames.
+"""
+
+from typing import Union, Literal
 import numpy as np
 import pandas as pd
-from sklearn.metrics.pairwise import haversine_distances
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
+from sklearn.neighbors import BallTree
 from pyseroepi.data.gazetteer_data import GAZETTEER_DICT
-# import warnings
-# warnings.filterwarnings("ignore", message="registration of accessor")
 
 
 # Accessors ------------------------------------------------------------------------------------------------------------
@@ -181,7 +184,7 @@ class EpiAccessor:
 
     # --- Time Series / Epidemic Curve Methods ---
 
-    def epidemic_curve(self, freq: str = 'W', stratify_by: str = None) -> pd.DataFrame:
+    def epidemic_curve(self, freq: Literal['D', 'W', 'ME', 'YE'] = 'W', stratify_by: str = None) -> pd.DataFrame:
         """
         Generates a time-series DataFrame for plotting epidemic curves.
 
@@ -478,13 +481,13 @@ class EpiAccessor:
 
         return inc_df
 
-    def get_transmission_clusters(
+    def transmission_clusters(
             self,
             clone_col: str,
             spatial_threshold_km: float = 10.0,
             temporal_threshold_days: int = 20,
             col_name: str = 'transmission_cluster'
-    ) -> pd.DataFrame:
+    ) -> pd.Series:
         """
         Identifies transmission clusters based on spatial and temporal proximity.
 
@@ -498,75 +501,93 @@ class EpiAccessor:
             col_name: Name for the resulting cluster column.
 
         Returns:
-            A new DataFrame with the transmission cluster labels added.
+            A Series with the transmission cluster labels.
 
         Raises:
             KeyError: If required columns ('lat', 'lon', 'date') are missing.
         """
-        df = self._obj.copy()
+        df = self._obj
 
         # 1. Validation Checks
         if clone_col not in df.columns:
             raise KeyError(f"Clone column '{clone_col}' not found in DataFrame.")
 
         # Intelligently check for your geo accessor/columns
-        if 'lat' not in df.columns or 'lon' not in df.columns:
+        if 'latitude' not in df.columns or 'longitude' not in df.columns:
             raise KeyError(
-                "Spatial clustering requires 'lat' and 'lon' columns. Ensure geo accessors have parsed coordinates.")
+                "Spatial clustering requires 'latitude' and 'longitude' columns. Ensure geo accessors have parsed coordinates.")
 
         if 'date' not in df.columns:
             raise KeyError("A 'date' column is required for temporal clustering.")
 
-        # Coerce dates to ensure clean math (drops timezones if present to allow raw day subtraction)
-        df['_temp_date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
-
-        # Keep track of the original index to map cluster labels back perfectly
-        df['_temp_idx'] = np.arange(len(df))
+        # Pre-compute data arrays at the DataFrame level to avoid per-group overhead
+        # Drops timezones if present
+        date_series = pd.to_datetime(df['date']).dt.tz_localize(None)
+        
+        # Coerce coordinates to standard numpy floats to resolve Pandas Float64 extension type issues
+        coords = np.radians(df[['latitude', 'longitude']].astype(float).values)
+        
+        # Convert dates to raw days (use float to allow NaNs for missing dates)
+        raw_dates = np.full(len(df), np.nan)
+        date_mask = date_series.notna().values
+        raw_dates[date_mask] = date_series[date_mask].values.astype('datetime64[D]').astype(float)
+        
+        # Create a boolean mask of rows that have all required spatiotemporal data
+        valid_mask = ~(np.isnan(coords[:, 0]) | np.isnan(coords[:, 1]) | np.isnan(raw_dates))
 
         # Initialize an array to hold the global cluster IDs
         cluster_labels = np.full(len(df), -1)
         current_cluster_id = 0
 
         # 2. Iterate and Cluster by Clone
-        for clone_id, group in df.groupby(clone_col, dropna=True):
-            n_points = len(group)
+        for clone_id, indices in df.groupby(clone_col, dropna=True).indices.items():
+            # Filter the group's indices to only those with valid spatiotemporal data
+            valid_indices = indices[valid_mask[indices]]
+            n_points = len(valid_indices)
 
-            # If the clone only appears once, it is its own isolated cluster
+            # If the clone only appears once (or zero times), it is its own isolated cluster
+            if n_points == 0:
+                continue
             if n_points == 1:
-                cluster_labels[group['_temp_idx'].values] = current_cluster_id
+                cluster_labels[valid_indices] = current_cluster_id
                 current_cluster_id += 1
                 continue
 
-            # --- A. Temporal Distance Matrix ---
-            # Convert to raw integer days for instantaneous vectorized subtraction
-            dates = group['_temp_date'].values.astype('datetime64[D]').astype(int)
-            time_dist = np.abs(dates[:, None] - dates[None, :])
+            # --- A. Spatial Radius Search (O(N log N)) ---
+            group_coords = coords[valid_indices]
+            group_dates = raw_dates[valid_indices]
+            
+            # Build a BallTree for fast spatial querying. Radius must be converted to radians.
+            tree = BallTree(group_coords, metric='haversine')
+            radius_radians = spatial_threshold_km / 6371.0
+            spatial_neighbors = tree.query_radius(group_coords, r=radius_radians)
 
-            # --- B. Spatial Distance Matrix ---
-            # Sklearn haversine requires coordinates in radians [lat, lon]
-            coords = np.radians(group[['lat', 'lon']].values)
-            # Multiply by Earth's radius (~6371 km) to convert to kilometers
-            space_dist = haversine_distances(coords, coords) * 6371.0
+            # --- B. Temporal Filter & Graph Construction ---
+            row_ind = []
+            col_ind = []
+            
+            for i, neighbors in enumerate(spatial_neighbors):
+                # Filter spatial neighbors to those that ALSO meet the temporal threshold
+                time_diffs = np.abs(group_dates[i] - group_dates[neighbors])
+                valid_neighbors = neighbors[time_diffs <= temporal_threshold_days]
+                
+                row_ind.extend([i] * len(valid_neighbors))
+                col_ind.extend(valid_neighbors)
 
-            # --- C. Graph Adjacency ---
-            # Two isolates are linked ONLY if they meet BOTH the temporal and spatial thresholds
-            adjacency = (time_dist <= temporal_threshold_days) & (space_dist <= spatial_threshold_km)
-
-            # --- D. Extract Transmission Chains ---
-            graph = csr_matrix(adjacency)
+            # --- C. Extract Transmission Chains ---
+            # Construct a sparse adjacency matrix directly from the valid pairs
+            data = np.ones(len(row_ind), dtype=bool)
+            graph = csr_matrix((data, (row_ind, col_ind)), shape=(n_points, n_points))
+            
             n_components, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
 
             # Offset the local labels by the global counter to ensure unique IDs across all clones
-            global_labels = labels + current_cluster_id
-            cluster_labels[group['_temp_idx'].values] = global_labels
-
+            cluster_labels[valid_indices] = labels + current_cluster_id
             current_cluster_id += n_components
 
         # 3. Cleanup and Formatting
-        # Format beautifully as strings (e.g., "TC_0001", "TC_0002")
-        df[col_name] = [f"TC_{i:04d}" if i != -1 else np.nan for i in cluster_labels]
-
-        return df.drop(columns=['_temp_idx', '_temp_date'])
+        res = pd.Series(cluster_labels, index=df.index, name=col_name, dtype="Int64")
+        return res.replace(-1, pd.NA).astype("category")
 
 
 @pd.api.extensions.register_dataframe_accessor("geno")
@@ -649,8 +670,8 @@ class GenoAccessor:
         Returns:
             A boolean Series.
         """
-        # Fills NA with empty string, then does a substring search
-        return self._obj[gene_col].fillna('').str.contains(target_gene, regex=False)
+        # str.contains with na=False avoids allocating a new Series with fillna
+        return self._obj[gene_col].str.contains(target_gene, regex=False, na=False)
 
     def sort_loci(self, locus_col: str) -> pd.DataFrame:
         """
@@ -703,7 +724,7 @@ class QCAccessor:
         Returns:
             A filtered copy of the DataFrame.
         """
-        df = self._obj.copy()
+        df = self._obj
 
         # Start with a boolean mask where everything is True
         mask = pd.Series(True, index=df.index)
@@ -720,7 +741,7 @@ class QCAccessor:
         if require_species and 'qc_species' in df.columns:
             mask &= df['qc_species'].str.contains(require_species, case=False, na=False)
 
-        return df[mask]
+        return df[mask].copy()
 
     def report(self) -> pd.DataFrame:
         """

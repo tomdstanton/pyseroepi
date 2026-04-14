@@ -1,0 +1,57 @@
+site_name = "🔗🐍⏭️ pyseroepi"
+site_description = "A Python library for bacterial sero-epidemiology"
+site_url = "https://tomdstanton.github.io/pyseroepi/"
+repo_url = "https://github.com/tomdstanton/pyseroepi"
+repo_name = "tomdstanton/pyseroepi"
+site_author = "Tom Stanton"
+
+nav = [
+    { "Home" = "index.md" },
+    { "API Reference" = "api.md" }
+]
+
+[theme]
+name = "material"
+features = [
+    "navigation.tabs",
+    "navigation.sections",
+    "navigation.expand",
+    "content.code.copy"
+]
+
+# Light Mode (Default)
+[[theme.palette]]
+scheme = "default"
+primary = "indigo"
+accent = "deep purple"
+[theme.palette.toggle]
+icon = "material/brightness-7"
+name = "Switch to dark mode"
+
+# Dark Mode (Slate)
+[[theme.palette]]
+scheme = "slate"
+primary = "indigo"
+accent = "deep purple"
+[theme.palette.toggle]
+icon = "material/brightness-4"
+name = "Switch to light mode"
+
+[theme.font]
+text = "Roboto"
+code = "JetBrains Mono"
+
+[markdown_extensions]
+admonition = {}
+"pymdownx.details" = {}
+"pymdownx.superfences" = {}
+"pymdownx.tabbed" = { alternate_style = true }
+"pymdownx.highlight" = { anchor_linenums = true, use_pygments = true }
+"pymdownx.inlinehilite" = {}
+"pymdownx.arithmatex" = { generic = true }
+
+[plugins]
+search = {}
+
+[plugins.mkdocstrings.handlers.python]
+paths = ["python"]

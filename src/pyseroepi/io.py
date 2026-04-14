@@ -1,3 +1,7 @@
+"""
+Module for genotype file I/O and parsing.
+"""
+
 from typing import Optional, Any
 import pandas as pd
 import pandera.pandas as pa

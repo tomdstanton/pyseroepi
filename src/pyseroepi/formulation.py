@@ -1,7 +1,11 @@
+"""
+Module for abstracting a vaccine formulation using trait prevalence and stability.
+"""
+
 from dataclasses import dataclass
 import pandas as pd
 import copy
-from abc import ABC, abstractmethod
+from abc import ABC
 from pyseroepi.estimators._base import BaseEstimator
 
 
@@ -47,6 +51,43 @@ class Formulation:
     stability_metrics: pd.DataFrame
     # Full history of ranks across all LOO permutations (used for plotting)
     permutation_history: pd.DataFrame
+
+    @classmethod
+    def from_custom(
+            cls,
+            custom_targets: list[str],
+            baseline_result: 'PrevalenceEstimates'
+    ) -> 'Formulation':
+        """
+        Creates a custom Formulation from a user-defined list of antigens.
+        Calculates the baseline coverage for these specific targets.
+        """
+        target_col = baseline_result.target
+        raw_df = baseline_result.data
+
+        # 1. Calculate the true baseline prevalence for everything
+        baseline = raw_df.groupby(target_col)['estimate'].sum().sort_values(ascending=False).reset_index()
+        baseline.rename(columns={target_col: 'antigen'}, inplace=True)
+
+        # 2. Filter and reorder the baseline to match the user's custom list exactly
+        # We use pd.Categorical to ensure the dataframe retains the exact order the user requested
+        baseline['antigen_cat'] = pd.Categorical(baseline['antigen'], categories=custom_targets, ordered=True)
+        custom_rankings = baseline.dropna(subset=['antigen_cat']).sort_values('antigen_cat').drop(
+            columns=['antigen_cat'])
+
+        # The new rank is simply the order they requested them in
+        custom_rankings['baseline_rank'] = range(1, len(custom_targets) + 1)
+
+        # 3. Create empty stability metrics (since this is a manual override, not a LOO calculation)
+        empty_df = pd.DataFrame()
+
+        return cls(
+            target=target_col,
+            max_valency=len(custom_targets),
+            rankings=custom_rankings,
+            stability_metrics=empty_df,
+            permutation_history=empty_df
+        )
 
     def plot(self, kind: str, **kwargs):
         """

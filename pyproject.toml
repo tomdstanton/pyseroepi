@@ -9,23 +9,26 @@ dependencies = [
     "pyarrow",
     "numpy",
     "scipy",
+    "scikit-learn",
     "pandera"
 ]
 
-[dependency-groups]
-models = ["scikit-learn", "numpyro", "statsmodels", "joblib"]
+# THESE ARE FOR END-USERS (Enables: pip install pyseroepi[plot,models])
+[project.optional-dependencies]
+spatial = ['geopandas']
+models = ["numpyro", "statsmodels", "joblib"]
 client = ["requests", "urllib3"]
-plot = ["plotly>=6.6.0", "kaleido"]
-app = [{include-group = "plot"}, "shiny", "shinywidgets", "shinyswatch", "itables", "htmltools"]
+plot = ["plotly>=6.6.0", "kaleido", "kaptive-plot"]
+app = ["pyseroepi[spatial,models,client,plot]", "shiny", "shinywidgets", "shinyswatch", "itables", "htmltools"]
+
+# THESE ARE ONLY FOR YOU (Local development, testing, and docs)
+[dependency-groups]
 test = ["pytest", "pytest-cov"]
 docs = ["zensical>=0.0.29", "mkdocstrings-python>=2.0.3"]
 dev = [
-    {include-group = "models"},
-    {include-group = "client"},
-    {include-group = "app"},
+    "pyseroepi[app]", # Installs all user extras into your dev environment
     {include-group = "test"},
-    {include-group = "docs"},
-    "geopandas", "biopython"
+    {include-group = "docs"}
 ]
 
 [build-system]
@@ -52,53 +55,20 @@ warn_unused_ignores = true
 show_error_codes = true
 
 [tool.pytest.ini_options]
-#addopts = "--doctest-modules"
-#testpaths = ["tests", "src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"  # Matched to your requires-python
 line-length = 120
 fix = true
 
 [tool.ruff.lint]
 select = [
-    # flake8-2020
-    "YTT",
-    # flake8-bandit
-    "S",
-    # flake8-bugbear
-    "B",
-    # flake8-builtins
-    "A",
-    # flake8-comprehensions
-    "C4",
-    # flake8-debugger
-    "T10",
-    # flake8-simplify
-    "SIM",
-    # isort
-    "I",
-    # mccabe
-    "C90",
-    # pycodestyle
-    "E", "W",
-    # pyflakes
-    "F",
-    # pygrep-hooks
-    "PGH",
-    # pyupgrade
-    "UP",
-    # ruff
-    "RUF",
-    # tryceratops
-    "TRY",
+    "YTT", "S", "B", "A", "C4", "T10", "SIM", "I", "C90", "E", "W", "F", "PGH", "UP", "RUF", "TRY"
 ]
 ignore = [
-    # LineTooLong
-    "E501",
-    # DoNotAssignLambda
-    "E731",
+    "E501", # LineTooLong
+    "E731", # DoNotAssignLambda
 ]
 
 [tool.ruff.lint.per-file-ignores]

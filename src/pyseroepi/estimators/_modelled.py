@@ -17,6 +17,11 @@ from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
 from pyseroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
 
 
+# # Export ---------------------------------------------------------------------------------------------------------------
+# __all__ = ['BayesianPrevalenceEstimator', 'RegressionPrevalenceEstimator', 'SpatialPrevalenceEstimator',
+#            'RegressionIncidenceEstimator']
+#
+
 # Set-up ---------------------------------------------------------------------------------------------------------------
 # Tell JAX to split the CPU into multiple virtual devices for parallel chains
 set_host_device_count(min(cpu_count(), 4))
@@ -119,7 +124,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
     provides credible intervals.
 
     Examples:
-        >>> from pyseroepi.estimators.modelled import BayesianPrevalenceEstimator
+        >>> from pyseroepi.estimators import BayesianPrevalenceEstimator
         >>> estimator = BayesianPrevalenceEstimator(method='mcmc')
         >>> # result = estimator.calculate(agg_df)
     """
@@ -310,7 +315,7 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
     and logit link.
 
     Examples:
-        >>> from pyseroepi.estimators.modelled import RegressionPrevalenceEstimator
+        >>> from pyseroepi.estimators import RegressionPrevalenceEstimator
         >>> estimator = RegressionPrevalenceEstimator()
         >>> # result = estimator.calculate(agg_df)
     """
@@ -392,7 +397,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
     of prevalence across a geographic area.
 
     Examples:
-        >>> from pyseroepi.estimators.modelled import SpatialPrevalenceEstimator
+        >>> from pyseroepi.estimators import SpatialPrevalenceEstimator
         >>> estimator = SpatialPrevalenceEstimator(lat_col='lat', lon_col='lon')
         >>> # result = estimator.calculate(agg_df)
     """
@@ -579,7 +584,7 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
     adjusting for sequencing volume (relative incidence).
 
     Examples:
-        >>> from pyseroepi.estimators.modelled import RegressionIncidenceEstimator
+        >>> from pyseroepi.estimators import RegressionIncidenceEstimator
         >>> estimator = RegressionIncidenceEstimator(use_relative_incidence=True)
         >>> # result = estimator.calculate(inc_df)
     """

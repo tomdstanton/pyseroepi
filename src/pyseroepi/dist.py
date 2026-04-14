@@ -1,3 +1,7 @@
+"""
+Module to handle genetic distance measures between isolates.
+"""
+
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import Self
@@ -9,12 +13,30 @@ from scipy.sparse.csgraph import connected_components as sp_connected_components
 
 
 # Constants ------------------------------------------------------------------------------------------------------------
-class MetricType(Enum):
-    LITERAL_DISTANCE = auto()  # e.g., 5 SNPs
-    NORMALISED_DISTANCE = auto()  # e.g., 0.05 Hamming
-    LITERAL_SIMILARITY = auto()  # e.g., 95 shared nucleotides
-    NORMALISED_SIMILARITY = auto()  # e.g., 0.95 Jaccard
+class MetricType(str, Enum):
+    """
+    Enumeration of supported metric types for pairwise comparisons.
 
+    These metric types define how to interpret the numerical values 
+    in a distance/similarity matrix.
+
+    Attributes:
+        ABSOLUTE_DISTANCE: An absolute distance measure (e.g., 5 SNPs).
+        RELATIVE_DISTANCE: A relative distance measure typically between 0.0 and 1.0 (e.g., 0.05 Hamming).
+        ABSOLUTE_SIMILARITY: An absolute similarity measure (e.g., 95 shared nucleotides).
+        RELATIVE_SIMILARITY: A relative similarity measure typically between 0.0 and 1.0 (e.g., 0.95 Jaccard).
+    """
+    ABSOLUTE_DISTANCE = auto()  # e.g., 5 SNPs
+    RELATIVE_DISTANCE = auto()  # e.g., 0.05 Hamming
+    ABSOLUTE_SIMILARITY = auto()  # e.g., 95 shared nucleotides
+    RELATIVE_SIMILARITY = auto()  # e.g., 0.95 Jaccard
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            if v := cls.__members__.get(value.upper().replace(" ", "_").replace("-", "_")):
+                return v
+        return cls.ABSOLUTE_DISTANCE
 
 # Classes --------------------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
@@ -28,9 +50,9 @@ class Distances:
     Attributes:
         matrix (csr_array): The underlying sparse distance matrix in CSR format.
         index (pd.Series): Sample identifiers corresponding to the matrix rows/columns.
-        metric_type (MetricType): The type of metric represented (e.g., LITERAL_DISTANCE).
+        metric_type (MetricType): The type of metric represented (e.g., ABSOLUTE_DISTANCE).
         max_value (float): The maximum possible value for the metric, used for
-            conversions between literal and normalized types.
+            conversions between absolute and relative types.
 
     Examples:
         >>> import pandas as pd
@@ -45,7 +67,7 @@ class Distances:
     matrix: csr_array
     index: pd.Series
     metric_type: MetricType
-    max_value: float = None  # Required if converting between literal and normalised
+    max_value: float = None  # Required if converting between absolute and relative
 
     def __post_init__(self):
         """Validates the consistency of the distance matrix and labels."""
@@ -58,7 +80,7 @@ class Distances:
 
     @classmethod
     def from_pairwise(cls, query_col: pd.Series, target_col: pd.Series, weight_col: pd.Series,
-                      metric_type: MetricType = MetricType.LITERAL_DISTANCE) -> Self:
+                      metric_type: MetricType = MetricType.ABSOLUTE_DISTANCE) -> Self:
         """
         Creates a Distances instance from long-format pairwise data.
 
@@ -66,7 +88,7 @@ class Distances:
             query_col: Series containing the first isolate IDs.
             target_col: Series containing the second isolate IDs.
             weight_col: Series containing the distances/similarities.
-            metric_type: The type of metric provided. Defaults to LITERAL_DISTANCE.
+            metric_type: The type of metric provided. Defaults to ABSOLUTE_DISTANCE.
 
         Returns:
             A new Distances instance.
@@ -74,20 +96,20 @@ class Distances:
         # 1. Drop to pure NumPy for speed
         q_vals = query_col.values
         t_vals = target_col.values
-        # 2. Concatenate the two arrays into one long 1D array
-        all_nodes = np.concatenate([q_vals, t_vals])
-        # 3. np.unique with return_inverse gives us the unique labels AND
-        # instantly maps every original string to its new integer index!
-        uids, mapped_indices = np.unique(all_nodes, return_inverse=True)
+        
+        # 2. Use pd.factorize for highly optimized O(N) string hashing 
+        # (significantly faster than np.unique's O(N log N) sorting approach)
+        codes, uids = pd.factorize(np.concatenate([q_vals, t_vals]))
+        
         # 4. Split the mapped indices back into rows and columns
         half = len(q_vals)
-        rows = mapped_indices[:half]
-        cols = mapped_indices[half:]
+        rows = codes[:half]
+        cols = codes[half:]
         # 5. Build the matrix
         n = len(uids)
         M = coo_array((weight_col.values, (rows, cols)), shape=(n, n))
         # 6. Symmetrize and ensure it returns a CSR matrix
-        return cls(M.maximum(M.T), pd.Series(uids), metric_type)
+        return cls(M.maximum(M.T).tocsr(), pd.Series(uids), metric_type)
 
     @classmethod
     def from_ska2(cls, filepath_or_buffer) -> Self:
@@ -117,7 +139,7 @@ class Distances:
         df = pd.read_csv(filepath_or_buffer, index_col=0)
         M = coo_array(df.values)
         M = M.maximum(M.T)
-        return cls(M, df.columns, MetricType.LITERAL_DISTANCE)
+        return cls(M.tocsr(), pd.Series(df.columns), MetricType.ABSOLUTE_DISTANCE)
 
     @classmethod
     def from_newick(cls, newick_string: str) -> Self:
@@ -160,7 +182,7 @@ class Distances:
         return cls(
             matrix=csr_array(matrix),
             index=pd.Series(labels),
-            metric_type=MetricType.LITERAL_DISTANCE
+            metric_type=MetricType.ABSOLUTE_DISTANCE
         )
 
     def connected_components(self, threshold: int = 20) -> pd.Series:
@@ -179,7 +201,7 @@ class Distances:
         # 2. Convert to a binary adjacency array:
         # If distance <= threshold, make it a 1 (Valid Edge).
         # If distance > threshold, make it a 0 (Severed Edge).
-        adj.data = np.where(adj.data <= threshold, 1, 0)
+        adj.data = (adj.data <= threshold).astype(np.int8)
         # 3. Safely eliminate the 0s (which are now only the severed edges).
         # Your identical clones are safe because their distance of 0 was turned into a 1!
         adj.eliminate_zeros()
@@ -208,7 +230,7 @@ class Distances:
             raise TypeError("The provided model must implement a 'fit_predict' method.")
 
         # We ensure the metric is a distance, not a similarity, for standard clusterers
-        distance_obj = self.to_type(MetricType.NORMALISED_DISTANCE)
+        distance_obj = self.to_type(MetricType.RELATIVE_DISTANCE)
 
         # Call the external method on our raw sparse array
         cluster_labels = clusterer.fit_predict(distance_obj.matrix, **kwargs)
@@ -232,34 +254,38 @@ class Distances:
         if self.metric_type == target_type:
             return self
 
-        # If crossing the Literal <-> Normalised boundary, we need max_value
-        needs_max = {MetricType.LITERAL_DISTANCE, MetricType.LITERAL_SIMILARITY}
-        targets_norm = {MetricType.NORMALISED_DISTANCE, MetricType.NORMALISED_SIMILARITY}
+        # If crossing the Absolute <-> Relative boundary, we need max_value
+        needs_max = {MetricType.ABSOLUTE_DISTANCE, MetricType.ABSOLUTE_SIMILARITY}
+        targets_norm = {MetricType.RELATIVE_DISTANCE, MetricType.RELATIVE_SIMILARITY}
 
         if (self.metric_type in needs_max and target_type in targets_norm) or \
                 (self.metric_type in targets_norm and target_type in needs_max):
             if self.max_value is None:
-                raise ValueError(f"Cannot convert between Literal and Normalised without a max_value.")
+                raise ValueError(f"Cannot convert between Absolute and Relative without a max_value.")
 
-        # 1. Standardize to Normalised Distance first (as a base state)
-        if self.metric_type == MetricType.LITERAL_DISTANCE:
+        # 1. Standardize to Relative Distance first (as a base state)
+        if self.metric_type == MetricType.ABSOLUTE_DISTANCE:
             base_mat = self.matrix / self.max_value
-        elif self.metric_type == MetricType.LITERAL_SIMILARITY:
+        elif self.metric_type == MetricType.ABSOLUTE_SIMILARITY:
             base_mat = 1.0 - (self.matrix / self.max_value)
-        elif self.metric_type == MetricType.NORMALISED_SIMILARITY:
+        elif self.metric_type == MetricType.RELATIVE_SIMILARITY:
             base_mat = 1.0 - self.matrix
         else:
             base_mat = self.matrix
 
-        # 2. Convert from base state (Normalised Distance) to Target
-        if target_type == MetricType.NORMALISED_DISTANCE:
+        # 2. Convert from base state (Relative Distance) to Target
+        if target_type == MetricType.RELATIVE_DISTANCE:
             new_mat = base_mat
-        elif target_type == MetricType.NORMALISED_SIMILARITY:
+        elif target_type == MetricType.RELATIVE_SIMILARITY:
             new_mat = 1.0 - base_mat
-        elif target_type == MetricType.LITERAL_DISTANCE:
+        elif target_type == MetricType.ABSOLUTE_DISTANCE:
             new_mat = base_mat * self.max_value
-        elif target_type == MetricType.LITERAL_SIMILARITY:
+        elif target_type == MetricType.ABSOLUTE_SIMILARITY:
             new_mat = (1.0 - base_mat) * self.max_value
 
+        # Explicitly cast back to CSR to prevent dense matrix bleed from scalar subtraction
+        if not isinstance(new_mat, csr_array):
+            new_mat = csr_array(new_mat)
+            
         # Return a new frozen instance
         return replace(self, matrix=new_mat, metric_type=target_type)
