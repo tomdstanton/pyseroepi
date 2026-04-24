@@ -212,3 +212,6 @@ __marimo__/
 
 # MacOS
 *.DS
+
+# Old app files
+#src/pyseroepi/app/old/

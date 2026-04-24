@@ -3,6 +3,7 @@ from typing import Tuple, TypeVar, Generic, Optional
 from dataclasses import dataclass
 from warnings import warn
 import pandas as pd
+from pyseroepi.constants import PlotType, AggregationType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -32,7 +33,7 @@ class BaseEstimator(ABC, Generic[T_Result]):
         if exclude_cols is None:
             exclude_cols = []
 
-        meta = agg_df.attrs.get("prevalence_meta", {})
+        meta = agg_df.attrs.get("metric_meta", {})
         inferred_strata = [col for col in agg_df.columns if col not in exclude_cols]
         stratified_by = meta.get("stratified_by", inferred_strata)
         self._validate_suitability(agg_df, stratified_by)
@@ -115,7 +116,7 @@ class Estimates:
     adjusted_for: Optional[str]
     target: str  # e.g., "blaKPC" or "Serotype"
 
-    def plot(self, kind: str, **kwargs):
+    def plot(self, kind: PlotType, **kwargs):
         """
         Renders a visualization of the estimates.
 
@@ -136,7 +137,7 @@ class Estimates:
             ) from None  # 'from None' hides the ugly raw stack trace from the user
 
         plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
-        if (plotter := plotter_map.get(kind)) is not None:
+        if (plotter := plotter_map.get(kind)) is None:
             available = list(plotter_map.keys())
             raise ValueError(f"Plot type '{kind}' is not registered. Available: {available}")
 
@@ -150,10 +151,10 @@ class PrevalenceEstimates(Estimates):
 
     Attributes:
         method: The statistical method used (e.g., 'bayesian_mcmc').
-        prevalence_type: Either 'trait' or 'compositional'.
+        aggregation_type: Either 'trait' or 'compositional'.
     """
     method: str
-    prevalence_type: str  # "trait" or "compositional"
+    aggregation_type: AggregationType  # "trait" or "compositional"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,9 +186,9 @@ class IncidenceEstimates(Estimates):
 
     Attributes:
         freq: The time resolution used (e.g., 'ME').
-        incidence_type: Either 'trait' or 'compositional'.
+        aggregation_type: Either 'trait' or 'compositional'.
         model_results: A DataFrame containing regression outputs (IRR, CIs, P-values).
     """
     freq: str                   # The time resolution (e.g., 'ME')
-    incidence_type: str         # "trait" or "compositional"
+    aggregation_type: AggregationType         # "trait" or "compositional"
     model_results: pd.DataFrame # The regression outputs (IRR, CIs, P-values)

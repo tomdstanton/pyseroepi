@@ -10,6 +10,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from sklearn.neighbors import BallTree
 from pyseroepi.data.gazetteer_data import GAZETTEER_DICT
+from pyseroepi.constants import MetricType
 
 
 # Accessors ------------------------------------------------------------------------------------------------------------
@@ -58,6 +59,10 @@ class GeoAccessor:
         if 'spatial_resolution' not in df.columns:
             df['spatial_resolution'] = 'unknown'
 
+        # If it's a category, we need to ensure 'exact' and 'country' are in the categories before assigning
+        if isinstance(df['spatial_resolution'].dtype, pd.CategoricalDtype):
+            df['spatial_resolution'] = df['spatial_resolution'].cat.add_categories(['exact', 'country'])
+
         exact_mask = df['latitude'].notna() & df['longitude'].notna()
         df.loc[exact_mask, 'spatial_resolution'] = 'exact'
 
@@ -78,6 +83,10 @@ class GeoAccessor:
                 df['iso3'] = clean_countries.map(ref_data['iso3'])
             if 'region' not in df.columns or df['region'].isna().all():
                 df['region'] = clean_countries.map(ref_data['region'])
+
+        # Remove unused categories if it was a CategoricalDtype
+        if isinstance(df['spatial_resolution'].dtype, pd.CategoricalDtype):
+             df['spatial_resolution'] = df['spatial_resolution'].cat.remove_unused_categories()
 
         return df
 
@@ -318,7 +327,8 @@ class EpiAccessor:
         agg_df = agg_df[agg_df['n'] > 0].copy()
 
         agg_df.attrs = self._obj.attrs.copy()
-        agg_df.attrs['prevalence_meta'] = {
+        agg_df.attrs['metric_meta'] = {
+            "metric_type": MetricType.PREVALENCE,
             "stratified_by": stratify_by,
             "target": target_col if target_col else stratify_by[-1],
             "type": "trait" if target_col else "compositional",
@@ -471,7 +481,8 @@ class EpiAccessor:
         inc_df = inc_df.rename(columns={'date_bin': 'date'})
 
         inc_df.attrs = self._obj.attrs.copy()
-        inc_df.attrs['incidence_meta'] = {
+        inc_df.attrs['metric_meta'] = {
+            "metric_type": MetricType.INCIDENCE,
             "stratified_by": stratify_by,
             "target": target_col if target_col else stratify_by[-1],
             "type": "trait" if target_col else "compositional",
@@ -485,8 +496,7 @@ class EpiAccessor:
             self,
             clone_col: str,
             spatial_threshold_km: float = 10.0,
-            temporal_threshold_days: int = 20,
-            col_name: str = 'transmission_cluster'
+            temporal_threshold_days: int = 20
     ) -> pd.Series:
         """
         Identifies transmission clusters based on spatial and temporal proximity.
@@ -498,13 +508,12 @@ class EpiAccessor:
             clone_col: Column containing clone IDs (e.g., 'ST' or a custom cluster).
             spatial_threshold_km: Maximum distance in kilometers. Defaults to 10.0.
             temporal_threshold_days: Maximum time difference in days. Defaults to 20.
-            col_name: Name for the resulting cluster column.
 
         Returns:
             A Series with the transmission cluster labels.
 
         Raises:
-            KeyError: If required columns ('lat', 'lon', 'date') are missing.
+            KeyError: If required columns ('latitude', 'longitude', 'date') are missing.
         """
         df = self._obj
 
@@ -514,8 +523,8 @@ class EpiAccessor:
 
         # Intelligently check for your geo accessor/columns
         if 'latitude' not in df.columns or 'longitude' not in df.columns:
-            raise KeyError(
-                "Spatial clustering requires 'latitude' and 'longitude' columns. Ensure geo accessors have parsed coordinates.")
+            raise KeyError("Spatial clustering requires 'latitude' and 'longitude' columns. "
+                           "Ensure geo accessors have parsed coordinates.")
 
         if 'date' not in df.columns:
             raise KeyError("A 'date' column is required for temporal clustering.")
@@ -586,7 +595,8 @@ class EpiAccessor:
             current_cluster_id += n_components
 
         # 3. Cleanup and Formatting
-        res = pd.Series(cluster_labels, index=df.index, name=col_name, dtype="Int64")
+        res = pd.Series(cluster_labels, index=df.index, dtype="Int64",
+                        name=f'transmission_cluster_{spatial_threshold_km=}_{temporal_threshold_days=}')
         return res.replace(-1, pd.NA).astype("category")
 
 

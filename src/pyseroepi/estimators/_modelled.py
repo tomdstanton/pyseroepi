@@ -17,11 +17,6 @@ from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
 from pyseroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
 
 
-# # Export ---------------------------------------------------------------------------------------------------------------
-# __all__ = ['BayesianPrevalenceEstimator', 'RegressionPrevalenceEstimator', 'SpatialPrevalenceEstimator',
-#            'RegressionIncidenceEstimator']
-#
-
 # Set-up ---------------------------------------------------------------------------------------------------------------
 # Tell JAX to split the CPU into multiple virtual devices for parallel chains
 set_host_device_count(min(cpu_count(), 4))
@@ -128,9 +123,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         >>> estimator = BayesianPrevalenceEstimator(method='mcmc')
         >>> # result = estimator.calculate(agg_df)
     """
-    Method = Literal['mcmc', 'svi']
-
-    def __init__(self, method: Method = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
+    def __init__(self, method: Literal['mcmc', 'svi'] = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000, target_event='event', target_n='n', seed: int = 42):
         """
         Initializes the BayesianPrevalenceEstimator.
@@ -187,7 +180,8 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
 
     def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
         """Runs MCMC inference using NUTS."""
-        mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples, num_chains=self.num_chains)
+        mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
+                    num_chains=self.num_chains, progress_bar=False)
         mcmc.run(rng_key, **jax_data)
         return mcmc.get_samples()
 
@@ -286,7 +280,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
             stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            prevalence_type=self.meta_.get("type", "unknown"),
+            aggregation_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
 
@@ -302,8 +296,9 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
             return
 
         # NumPyro's built-in summary prints R-hat and ESS directly to the console
-        print(diag.print_summary(self.samples_, prob=0.95, group_by_chain=False))
+        diag.print_summary(self.samples_, prob=0.95, group_by_chain=False)
 
+    # Populate method registry
     _METHODS = {'mcmc': _mcmc_inference, 'svi': _svi_inference}
 
 
@@ -380,7 +375,7 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
             stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            prevalence_type=self.meta_.get("type", "unknown"),
+            aggregation_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
 
@@ -401,10 +396,8 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         >>> estimator = SpatialPrevalenceEstimator(lat_col='lat', lon_col='lon')
         >>> # result = estimator.calculate(agg_df)
     """
-    Method = Literal['mcmc', 'svi']
-
     def __init__(self, lat_col: str = 'lat', lon_col: str = 'lon',
-                 method: Method = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
+                 method: Literal['mcmc', 'svi'] = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000,
                  target_event='event', target_n='n', seed: int = 42):
         """
@@ -487,7 +480,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         inference_func = getattr(self, f"_{self.method}_inference")
         self.samples_ = inference_func(jax_data, rng_key)
 
-        self.meta_ = agg_df.attrs.get("prevalence_meta", {})
+        self.meta_ = agg_df.attrs.get("metric_meta", {})
         self.is_fitted_ = True
         return self
 
@@ -549,7 +542,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             stratified_by=[self.lat_col, self.lon_col],
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            prevalence_type=self.meta_.get("type", "unknown"),
+            aggregation_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
 
@@ -606,7 +599,7 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
 
     def fit(self, inc_df: pd.DataFrame) -> 'RegressionIncidenceEstimator':
         """Fits the Negative Binomial GLM to each stratum."""
-        self.meta_ = inc_df.attrs.get("incidence_meta", {})
+        self.meta_ = inc_df.attrs.get("metric_meta", {})
         target_col = self.meta_.get("target")
         self.freq_ = self.meta_.get("freq")
         self.strata_ = self.meta_.get("stratified_by", [])
@@ -697,7 +690,7 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             target=self.meta_.get("target", "unknown"),
             freq=self.freq_,
-            incidence_type=self.meta_.get("type", "unknown"),
+            aggregation_type=self.meta_.get("type", "unknown"),
             model_results=pd.DataFrame(results)
         )
 

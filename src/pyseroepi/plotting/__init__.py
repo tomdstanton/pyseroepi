@@ -2,60 +2,206 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from pyseroepi.plotting._base import BasePlotter
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:  # Delay import to avoid circular dependencies
-    from pyseroepi.estimators import (PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates,
+from pyseroepi.constants import PlotType
+from pyseroepi.estimators._base import (PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates,
                                         IncidenceEstimates)
-    from pyseroepi.formulation import Formulation
+from pyseroepi.formulation import Formulation
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
-@BasePlotter.register_plotter(PrevalenceEstimates, 'forest')
-class ForestPlotter(BasePlotter):
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.COMPOSITION_BAR)
+class CompositionBarPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', top_n: int = None, sort_ascending: bool = False):
-        """Generates a dot-and-whisker forest plotting for prevalence data."""
-        data = result.data.copy()
-        y_col_name = result.stratified_by[0]
+    def render(cls, result: PrevalenceEstimates, **kwargs) -> go.Figure:
+        df = result.data.copy()
+        target = result.target
 
-        data = data.sort_values(by='estimate', ascending=sort_ascending)
-        if top_n:
-            data = data.head(top_n)
-
-        hover_text = (
-                f"<b>{y_col_name}</b>: " + data[y_col_name].astype(str) +
-                "<br><b>Estimate</b>: " + data['estimate'].map('{:.2%}'.format) +
-                "<br><b>95% CI</b>: [" + data['lower'].map('{:.2%}'.format) + ", " + data['upper'].map(
-            '{:.2%}'.format) + "]" +
-                f"<br><b>Events (n)</b>: " + data['event'].astype(str) + " (" + data['n'].astype(str) + ")"
-        )
+        # Detect if we have a grouping variable (e.g., 'country')
+        group_cols = [c for c in result.stratified_by if c != target]
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=data['estimate'], y=data[y_col_name], mode='markers', name="Prevalence",
-            hoverinfo='text', hovertext=hover_text,
-            marker=dict(color=cls._MAIN_COLOUR, size=10, symbol='circle'),
-            error_x=dict(
-                type='data', symmetric=False,
-                array=data['upper'] - data['estimate'],
-                arrayminus=data['estimate'] - data['lower'],
-                color=cls._MAIN_COLOUR, thickness=2, width=4
-            )
-        ))
 
-        title_prefix = "Composition of" if result.prevalence_type == "compositional" else "Prevalence of"
+        # We calculate the global rank of the targets to ensure the colors and stack
+        # order remain perfectly consistent across all bars
+        target_ranks = df.groupby(target)['estimate'].sum().sort_values(ascending=False).index
+
+        if not group_cols:
+            # --- 1 VARIABLE: Global Composition ---
+            for t in target_ranks:
+                t_df = df[df[target] == t]
+                fig.add_trace(go.Bar(
+                    x=["Global Formulation"],
+                    y=t_df['estimate'],
+                    name=str(t),
+                    hovertemplate=f"<b>{t}</b><br>Prevalence: %{{y:.1%}}<extra></extra>"
+                ))
+        else:
+            # --- 2 VARIABLES: Grouped Composition ---
+            group_col = group_cols[0]
+            for t in target_ranks:
+                t_df = df[df[target] == t]
+                fig.add_trace(go.Bar(
+                    x=t_df[group_col],
+                    y=t_df['estimate'],
+                    name=str(t),
+                    hovertemplate=f"<b>{t}</b><br>{group_col}: %{{x}}<br>Prevalence: %{{y:.1%}}<extra></extra>"
+                ))
+
+        # Apply the global theme and force the stacking mode
+        return fig.update_layout(
+            dict1=cls._THEME,
+            barmode='stack',
+            title=f"<b>Formulation Composition</b><br><sup>Stratified by {', '.join(result.stratified_by)}</sup>",
+            yaxis_title="Cumulative Prevalence",
+            yaxis=dict(tickformat='.0%')  # Renders 0.8 as 80%
+        )
+
+
+@BasePlotter.register_plotter(PrevalenceEstimates,  PlotType.COMPOSITION_HEATMAP)
+class CompositionHeatmapPlotter(BasePlotter):
+
+    @classmethod
+    def render(cls, result: PrevalenceEstimates, **kwargs) -> go.Figure:
+        df = result.data.copy()
+        target = result.target
+        group_cols = [c for c in result.stratified_by if c != target]
+
+        # 1. The Strict Safeguard
+        if len(group_cols) != 1:
+            raise ValueError(
+                f"Composition Heatmap strictly requires exactly 2 stratification variables (Target + 1 Group). "
+                f"Found target '{target}' and groups: {group_cols}"
+            )
+
+        group_col = group_cols[0]
+
+        # 2. Reshape from Long to Wide (The Z-Matrix)
+        # fill_value=0 ensures that if a K-locus isn't found in a country, it shows as empty, not NaN
+        pivot_df = df.pivot_table(
+            index=target,
+            columns=group_col,
+            values='estimate',
+            fill_value=0
+        )
+
+        # 3. Sort the Y-Axis so the most globally prevalent targets sit at the top of the heatmap
+        pivot_df['total_burden'] = pivot_df.sum(axis=1)
+        pivot_df = pivot_df.sort_values('total_burden', ascending=True).drop(columns=['total_burden'])
+
+        # 4. The Midnight Fluorescence Color Scale
+        # We blend from the Slate background to your Electric Cyan
+        slate_bg = cls._THEME['plot_bgcolor']
+        cyan_accent = cls._MAIN_COLOUR
+        custom_colorscale = [
+            [0.0, slate_bg],  # 0% prevalence fades perfectly into the background
+            [0.3, '#38BDF8'],  # Soft mid-tone for lower prevalences
+            [1.0, cyan_accent]  # Maximum intensity for the dominant clones
+        ]
+
+        fig = go.Figure(data=go.Heatmap(
+            z=pivot_df.values,
+            x=pivot_df.columns,
+            y=pivot_df.index,
+            colorscale=custom_colorscale,
+            showscale=True,  # Shows the colorbar legend on the right
+            colorbar=dict(tickformat='.0%'),
+            hovertemplate=f"<b>%{{y}}</b><br>{group_col}: %{{x}}<br>Prevalence: %{{z:.1%}}<extra></extra>"
+        ))
 
         return fig.update_layout(
             dict1=cls._THEME,
-            title=f"<b>{title_prefix} {result.target}</b><br><sup>Method: {result.method}</sup>",
-            yaxis=dict(title=y_col_name, categoryorder='array'),
-            xaxis=dict(title='Prevalence (95% CI)', tickformat='.0%', range=[0, 1]),
-            showlegend=False
+            title=f"<b>Prevalence Density Matrix</b><br><sup>{target} vs {group_col}</sup>",
+            xaxis_title=group_col,
+            yaxis_title=target
         )
 
 
-@BasePlotter.register_plotter(IncidenceEstimates, 'epicurve')
+
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.FOREST)
+class ForestPlotter(BasePlotter):
+
+    @classmethod
+    def render(cls, result: PrevalenceEstimates, sort_by: str = 'estimate', **kwargs) -> go.Figure:
+        df = result.data.copy()
+        target = result.target  # e.g., 'K_locus'
+
+        # 1. Detect if there is a secondary grouping variable (e.g., 'country')
+        group_cols = [c for c in result.stratified_by if c != target]
+        group_col = group_cols[0] if group_cols else None
+
+        # Sort the dataframe so the highest prevalences appear at the top
+        if sort_by in df.columns:
+            df = df.sort_values(sort_by, ascending=True)
+
+        fig = go.Figure()
+
+        if group_col:
+            # --- MULTI-VARIABLE: Grouped Forest Plot ---
+            # We plot each group as its own trace to generate a legend and unique colors
+            for group_name, group_df in df.groupby(group_col):
+                fig.add_trace(go.Scatter(
+                    x=group_df['estimate'],
+                    y=group_df[target],
+                    name=str(group_name),
+                    mode='markers',
+                    marker=dict(size=10, symbol='square'),
+                    error_x=dict(
+                        type='data',
+                        symmetric=False,
+                        array=group_df['upper'] - group_df['estimate'],
+                        arrayminus=group_df['estimate'] - group_df['lower'],
+                        width=0,  # Removes the vertical caps for a cleaner "Tufte" look
+                        thickness=2
+                    ),
+                    # Injecting the extra data directly into the hover state
+                    customdata=group_df[[group_col, 'lower', 'upper']].values,
+                    hovertemplate=(
+                        f"<b>{target}:</b> %{{y}}<br>"
+                        f"<b>{group_col}:</b> %{{customdata[0]}}<br>"
+                        "<b>Prevalence:</b> %{x:.1%}<br>"
+                        "<b>95% CI:</b> %{customdata[1]:.1%} - %{customdata[2]:.1%}<extra></extra>"
+                    )
+                ))
+
+            # THE MAGIC FIX: This prevents categorical points from overlapping!
+            fig.update_layout(scattermode='group')
+
+        else:
+            # --- SINGLE-VARIABLE: Standard Forest Plot ---
+            fig.add_trace(go.Scatter(
+                x=df['estimate'],
+                y=df[target],
+                mode='markers',
+                marker=dict(size=10, color=cls._MAIN_COLOUR, symbol='square'),
+                error_x=dict(
+                    type='data',
+                    symmetric=False,
+                    array=df['upper'] - df['estimate'],
+                    arrayminus=df['estimate'] - df['lower'],
+                    color=cls._CI_COLOUR,
+                    width=0, thickness=2
+                ),
+                customdata=df[['lower', 'upper']].values,
+                hovertemplate=(
+                    f"<b>{target}:</b> %{{y}}<br>"
+                    "<b>Prevalence:</b> %{x:.1%}<br>"
+                    "<b>95% CI:</b> %{customdata[0]:.1%} - %{customdata[1]:.1%}<extra></extra>"
+                )
+            ))
+
+        # Apply the global midnight theme
+        return fig.update_layout(
+            dict1=cls._THEME,
+            title=f"<b>Prevalence Estimates</b><br><sup>Stratified by {', '.join(result.stratified_by)}</sup>",
+            xaxis_title="Prevalence (%)",
+            yaxis_title=target,
+            xaxis=dict(tickformat='.0%'),  # Clean percentage formatting on the X-axis
+            yaxis=dict(autorange='reversed')  # Ensures highest rank is at the top
+        )
+
+
+@BasePlotter.register_plotter(IncidenceEstimates, PlotType.EPICURVE)
 class EpicurvePlotter(BasePlotter):
 
     @classmethod
@@ -111,7 +257,7 @@ class EpicurvePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'longitudinal_prevalence')
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.LONGITUDINAL_PREVALENCE)
 class LongitudinalPrevalencePlotter(BasePlotter):
 
     @classmethod
@@ -161,7 +307,7 @@ class LongitudinalPrevalencePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'vaccine_coverage')
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.VACCINE_COVERAGE)
 class VaccineCoveragePlotter(BasePlotter):
 
     @classmethod
@@ -231,11 +377,11 @@ class VaccineCoveragePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'choropleth')
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.CHOROPLETH)
 class ChoroplethPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', geo_col: str, target_variant: str = None,
+    def render(cls, result: 'PrevalenceEstimates', geo_col: str = 'country', target_variant: str = None,
                feature_id_key: str = "properties.NAME"):
         """
         Plots discrete regional prevalence on a map.
@@ -247,7 +393,7 @@ class ChoroplethPlotter(BasePlotter):
 
         # --- THE FIX: Isolate the specific variant for compositional data ---
         target_name = result.target
-        if result.prevalence_type == "compositional":
+        if result.aggregation_type == "compositional":
             if target_variant is None:
                 # Safely default to the most frequent variant if the user forgot to specify one
                 target_variant = data.groupby(target_name)['event'].sum().idxmax()
@@ -285,7 +431,7 @@ class ChoroplethPlotter(BasePlotter):
             hoverinfo='text'
         ))
 
-        title_prefix = "Regional Composition of" if result.prevalence_type == "compositional" else "Regional Prevalence of"
+        title_prefix = "Regional Composition of" if result.aggregation_type == "compositional" else "Regional Prevalence of"
 
         return fig.update_layout(
             dict1=cls._THEME,
@@ -298,7 +444,7 @@ class ChoroplethPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, 'spatial_surface')
+@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.SPATIAL_SURFACE)
 class SpatialSurfacePlotter(BasePlotter):
 
     @classmethod
@@ -339,7 +485,7 @@ class SpatialSurfacePlotter(BasePlotter):
             colorbar_title='Predicted<br>Prevalence'
         ))
 
-        title_prefix = "Spatial Composition of" if result.prevalence_type == "compositional" else "Spatial Surface for"
+        title_prefix = "Spatial Composition of" if result.aggregation_type == "compositional" else "Spatial Surface for"
 
         return fig.update_layout(
             dict1=cls._THEME,
@@ -351,7 +497,7 @@ class SpatialSurfacePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(AlphaDiversityEstimates, 'alpha_diversity')
+@BasePlotter.register_plotter(AlphaDiversityEstimates, '')
 class AlphaDiversityPlotter(BasePlotter):
 
     @classmethod
@@ -409,7 +555,7 @@ class AlphaDiversityPlotter(BasePlotter):
 
 
 
-@BasePlotter.register_plotter(BetaDiversityEstimates, 'beta_heatmap')
+@BasePlotter.register_plotter(BetaDiversityEstimates, '')
 class BetaHeatmapPlotter(BasePlotter):
 
     @classmethod
@@ -461,8 +607,8 @@ class BetaHeatmapPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(Formulation, 'rank_stability_bump')
-class RankStabilityBumpPlotter(BasePlotter):
+@BasePlotter.register_plotter(Formulation, PlotType.STABILITY_BUMP)
+class StabilityBumpPlotter(BasePlotter):
 
     @classmethod
     def render(cls, formulation: 'Formulation', **kwargs) -> go.Figure:

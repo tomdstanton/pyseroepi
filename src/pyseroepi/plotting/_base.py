@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from json import load as json_load
 from warnings import warn
 from importlib.resources import files
+from pyseroepi.constants import PlotType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -90,13 +91,13 @@ class BasePlotter(ABC):
     _PLOT_REGISTRY = {}
 
     @classmethod
-    def register_plotter(cls, result_class: type, plot_name: str) -> Callable:
+    def register_plotter(cls, result_class: type, plot_type: PlotType) -> Callable:
         """
         Decorator to register a plotter class for a specific result type.
 
         Args:
             result_class: The result class (e.g., PrevalenceEstimates) to register for.
-            plot_name: The name/kind of the plot (e.g., 'bar').
+            plot_type: The name/kind of the plot (e.g., 'bar').
 
         Returns:
             A decorator function.
@@ -105,7 +106,7 @@ class BasePlotter(ABC):
             if result_class not in cls._PLOT_REGISTRY:
                 cls._PLOT_REGISTRY[result_class] = {}
 
-            cls._PLOT_REGISTRY[result_class][plot_name] = plotter_cls
+            cls._PLOT_REGISTRY[result_class][plot_type] = plotter_cls
             return plotter_cls
 
         return decorator

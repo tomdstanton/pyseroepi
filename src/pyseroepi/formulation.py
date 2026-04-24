@@ -114,7 +114,7 @@ class Formulation:
             ) from None  # 'from None' hides the ugly raw stack trace from the user
 
         plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
-        if (plotter := plotter_map.get(kind)) is not None:
+        if (plotter := plotter_map.get(kind)) is None:
             available = list(plotter_map.keys())
             raise ValueError(f"Plot type '{kind}' is not registered. Available: {available}")
 
@@ -191,7 +191,7 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
         return _compile_stability_metrics(baseline, history, target, self.valency)
 
 
-class CrossValidatedFormulationDesigner(BaseFormulationDesigner):
+class CVFormulationDesigner(BaseFormulationDesigner):
     """
     Rigorous formulation design using true Leave-One-Out (LOO) cross-validation.
 

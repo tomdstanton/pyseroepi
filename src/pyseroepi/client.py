@@ -289,3 +289,29 @@ class PathogenwatchFolder(PathogenwatchContainerMixin):
     binned: bool = False
     _details_cache: Optional[dict] = field(default=None, init=False, repr=False, compare=False)
 
+
+def main():
+    client = PathogenwatchClient('d2bzgUnqmMggvC2AoLU3j8')
+    collections = {i.name: i for i in client.get_collections() if i.organismId == '573'}
+    collection = collections['KpNORM']
+
+    cols = ['id', 'uuid', 'status', 'name', 'location', 'createdAt', 'species', 'source', 'source__shape',
+         'metadata/citation', 'assemblyStats/QC', 'assemblyStats/Core reference', 'assemblyStats/Core matches',
+         'assemblyStats/Core families', 'assemblyStats/Non-core', 'assemblyStats/Genome length',
+         'assemblyStats/No. contigs', 'assemblyStats/Largest contig', 'assemblyStats/Average contig length',
+         'assemblyStats/N50', "assemblyStats/N's per 100 kbp", 'assemblyStats/GC content',
+         'antibiotics/Aminoglycosides', 'antibiotics/Carbapenems', 'antibiotics/Cephalosporins (3rd gen.)',
+         'antibiotics/Cephalosporins (3rd gen.) + β-lactamase inhibitors', 'antibiotics/Colistin',
+         'antibiotics/Fluoroquinolones', 'antibiotics/Fosfomycin', 'antibiotics/Glycopeptides',
+         'antibiotics/Macrolides', 'antibiotics/OmpK35/OmpK36', 'antibiotics/Penicillins',
+         'antibiotics/Penicillins + β-lactamase inhibitors', 'antibiotics/Phenicols', 'antibiotics/Rifampicin',
+         'antibiotics/SHV variants', 'antibiotics/Sulfonamides', 'antibiotics/Tetracycline', 'antibiotics/Tigecycline',
+         'antibiotics/Trimethoprim', 'typing/MLST/ST', 'typing/MLST/Profile', 'typing/cgMLST Lineage/LIN code',
+         'typing/PlasmidFinder/Inc Types', 'typing/Kleborate/Virulence score', 'typing/Kleborate/Aerobactin (AbST)',
+         'typing/Kleborate/Colibactin (CbST)', 'typing/Kleborate/Salmochelin (SmST)',
+         'typing/Kleborate/Yersiniabactin (YbST)', 'typing/Kleborate/RmpADC', 'typing/Kleborate/rmpA2',
+         'typing/Kaptive/K locus', 'typing/Kaptive/Capsule type', 'typing/Kaptive/Confidence',
+         'typing/Kaptive/OC locus']
+
+    import pandas as pd
+    genomes = pd.DataFrame(collection.get_genomes(client), columns=cols)

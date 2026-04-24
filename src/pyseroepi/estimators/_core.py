@@ -7,10 +7,6 @@ from pyseroepi.estimators._base import (BaseEstimator, PrevalenceEstimates, Alph
                                         BetaDiversityEstimates)
 
 
-# # Export ---------------------------------------------------------------------------------------------------------------
-# __all__ = ["FrequentistPrevalenceEstimator", "AlphaDiversityEstimator", "BetaDiversityEstimator"]
-#
-
 # Classes --------------------------------------------------------------------------------------------------------------
 class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
 
@@ -46,14 +42,13 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
 
         # 2. Fast horizontal concatenation (ignores the deep copy overhead)
         result_df = pd.concat([agg_df, pd.DataFrame(new_cols, index=agg_df.index)], axis=1)
-        meta = agg_df.attrs.get("prevalence_meta", {})
 
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=stratified_by,
             adjusted_for=meta.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            prevalence_type=meta.get("type", "unknown"),
+            aggregation_type=meta.get("type", "unknown"),
             target=meta.get("target", "unknown")
         )
 
