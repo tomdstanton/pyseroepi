@@ -214,4 +214,4 @@ __marimo__/
 *.DS
 
 # Old app files
-#src/pyseroepi/app/old/
+src/pyseroepi/app/old/
