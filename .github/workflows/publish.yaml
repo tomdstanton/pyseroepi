@@ -1,0 +1,47 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      # This triggers the workflow ONLY when you push a tag that starts with 'v' (e.g., v0.1.0)
+      - 'v*'
+
+# Required for Trusted Publishing to PyPI
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build and publish Python distribution 📦 to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pyeris # Replace with your actual PyPI package name
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # hatch-vcs needs the git history/tags to automatically determine the version number
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the package
+        # Since you are a uv-powered pipeline, we use uv to build the sdist and wheel
+        run: uv build
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # The gh-action-pypi-publish action automatically looks in the dist/ folder
+          packages-dir: dist/
