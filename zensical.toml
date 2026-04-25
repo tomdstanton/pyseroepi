@@ -10,12 +10,22 @@ nav = [
     { "API Reference" = "api.md" }
 ]
 
+extra_javascript = [
+    "javascripts/mathjax.js",
+    "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+]
+
 [theme]
 name = "material"
+icon = { repo = "fontawesome/brands/github" }
 features = [
     "navigation.tabs",
     "navigation.sections",
     "navigation.expand",
+    "navigation.top",          # Added: Back-to-top button
+    "toc.integrate",           # Added: Merges TOC into the left sidebar
+    "search.suggest",          # Added: Smarter search
+    "search.highlight",        # Added: Highlights search terms
     "content.code.copy"
 ]
 
@@ -54,4 +64,12 @@ admonition = {}
 search = {}
 
 [plugins.mkdocstrings.handlers.python]
-paths = ["python"]
+paths = ["src"]
+
+# Added: Global styling for the auto-generated API docs
+[plugins.mkdocstrings.handlers.python.options]
+show_root_heading = true
+show_source = true
+heading_level = 2
+show_signature_annotations = true
+separate_signature = true

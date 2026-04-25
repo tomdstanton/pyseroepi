@@ -3,6 +3,9 @@ from abc import ABC, abstractmethod
 from json import load as json_load
 from warnings import warn
 from importlib.resources import files
+
+from plotly.graph_objects import Figure
+
 from pyseroepi.constants import PlotType
 
 
@@ -81,7 +84,7 @@ class BasePlotter(ABC):
             try:
                 # Safely navigates the package structure regardless of where it's installed
                 geojson_path = files('pyseroepi.data').joinpath('world_boundaries.geojson')
-                with open(geojson_path, 'r', encoding='utf-8') as f:
+                with geojson_path.open(mode='r', encoding='utf-8') as f:
                     cls._WORLD_GEOJSON = json_load(f)
             except Exception as e:
                 warn(f"Could not load internal world boundaries. Ensure the file exists: {e}")
@@ -113,7 +116,7 @@ class BasePlotter(ABC):
 
     @classmethod
     @abstractmethod
-    def render(cls, result_obj: Any, **kwargs) -> 'plotly.graph_objects.Figure':
+    def render(cls, result_obj: Any, **kwargs) -> 'Figure':
         """
         Renders the result object into a Plotly figure.
 

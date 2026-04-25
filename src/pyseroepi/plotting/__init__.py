@@ -3,17 +3,16 @@ import numpy as np
 import plotly.graph_objects as go
 from pyseroepi.plotting._base import BasePlotter
 from pyseroepi.constants import PlotType
-from pyseroepi.estimators._base import (PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates,
-                                        IncidenceEstimates)
+from pyseroepi import estimators
 from pyseroepi.formulation import Formulation
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.COMPOSITION_BAR)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.COMPOSITION_BAR)
 class CompositionBarPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: PrevalenceEstimates, **kwargs) -> go.Figure:
+    def render(cls, result: 'estimators.PrevalenceEstimates', **kwargs) -> go.Figure:
         df = result.data.copy()
         target = result.target
 
@@ -58,11 +57,11 @@ class CompositionBarPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates,  PlotType.COMPOSITION_HEATMAP)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates,  PlotType.COMPOSITION_HEATMAP)
 class CompositionHeatmapPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: PrevalenceEstimates, **kwargs) -> go.Figure:
+    def render(cls, result: 'estimators.PrevalenceEstimates', **kwargs) -> go.Figure:
         df = result.data.copy()
         target = result.target
         group_cols = [c for c in result.stratified_by if c != target]
@@ -118,11 +117,11 @@ class CompositionHeatmapPlotter(BasePlotter):
 
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.FOREST)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.FOREST)
 class ForestPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: PrevalenceEstimates, sort_by: str = 'estimate', **kwargs) -> go.Figure:
+    def render(cls, result: 'estimators.PrevalenceEstimates', sort_by: str = 'estimate', **kwargs) -> go.Figure:
         df = result.data.copy()
         target = result.target  # e.g., 'K_locus'
 
@@ -201,11 +200,11 @@ class ForestPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(IncidenceEstimates, PlotType.EPICURVE)
+@BasePlotter.register_plotter(estimators.IncidenceEstimates, PlotType.EPICURVE)
 class EpicurvePlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'IncidenceEstimates', **kwargs):
+    def render(cls, result: 'estimators.IncidenceEstimates', **kwargs):
         """
         Plots a classic Epidemic Curve (Cases over Time).
         Displays total sequencing volume in the background to visually address sampling bias.
@@ -257,11 +256,11 @@ class EpicurvePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.LONGITUDINAL_PREVALENCE)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.LONGITUDINAL_PREVALENCE)
 class LongitudinalPrevalencePlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', **kwargs):
+    def render(cls, result: 'estimators.PrevalenceEstimates', **kwargs):
         """
         Plots a time-series line chart for longitudinal prevalence data.
         """
@@ -307,11 +306,11 @@ class LongitudinalPrevalencePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.VACCINE_COVERAGE)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.VACCINE_COVERAGE)
 class VaccineCoveragePlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates',  max_valencies: int = None):
+    def render(cls, result: 'estimators.PrevalenceEstimates',  max_valencies: int = None):
         """
         Calculates cumulative population coverage.
         Crucial for designing multivalent vaccines (e.g., K-locus targeting).
@@ -377,11 +376,11 @@ class VaccineCoveragePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.CHOROPLETH)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.CHOROPLETH)
 class ChoroplethPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', geo_col: str = 'country', target_variant: str = None,
+    def render(cls, result: 'estimators.PrevalenceEstimates', geo_col: str = 'country', target_variant: str = None,
                feature_id_key: str = "properties.NAME"):
         """
         Plots discrete regional prevalence on a map.
@@ -444,11 +443,11 @@ class ChoroplethPlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(PrevalenceEstimates, PlotType.SPATIAL_SURFACE)
+@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.SPATIAL_SURFACE)
 class SpatialSurfacePlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'PrevalenceEstimates', lat_col: str = 'lat', lon_col: str = 'lon'):
+    def render(cls, result: 'estimators.PrevalenceEstimates', lat_col: str = 'lat', lon_col: str = 'lon'):
         """
         Plots a continuous heatmap surface.
         Designed specifically for the dense grid output of the SpatialPrevalenceEstimator.
@@ -497,11 +496,11 @@ class SpatialSurfacePlotter(BasePlotter):
         )
 
 
-@BasePlotter.register_plotter(AlphaDiversityEstimates, '')
+@BasePlotter.register_plotter(estimators.AlphaDiversityEstimates, PlotType.ALPHA_DIVERSITY)
 class AlphaDiversityPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'AlphaDiversityEstimates',  metric: str = 'shannon',
+    def render(cls, result: 'estimators.AlphaDiversityEstimates',  metric: str = 'shannon',
                     sort_ascending: bool = False) -> go.Figure:
         """
         Plots a glowing lollipop chart for within-group diversity.
@@ -555,11 +554,11 @@ class AlphaDiversityPlotter(BasePlotter):
 
 
 
-@BasePlotter.register_plotter(BetaDiversityEstimates, '')
+@BasePlotter.register_plotter(estimators.BetaDiversityEstimates, PlotType.BETA_HEATMAP)
 class BetaHeatmapPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'BetaDiversityEstimates', mask_upper: bool = True) -> go.Figure:
+    def render(cls, result: 'estimators.BetaDiversityEstimates', mask_upper: bool = True) -> go.Figure:
         """
         Plots an N x N dissimilarity matrix.
         If mask_upper is True, perfectly formats it as an academic lower-triangle heatmap.
@@ -622,7 +621,7 @@ class StabilityBumpPlotter(BasePlotter):
 
         fig = go.Figure()
 
-        # We only want to plotting the lines for antigens that actually made it into the baseline formulation
+        # We only want to plot the lines for antigens that actually made it into the baseline formulation
         top_antigens = baseline.head(valency)['antigen'].tolist()
 
         # X-axis categories: Baseline first, then all the holdout permutations

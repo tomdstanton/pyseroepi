@@ -1,7 +1,6 @@
 """
 Module for abstracting a vaccine formulation using trait prevalence and stability.
 """
-
 from dataclasses import dataclass
 import pandas as pd
 import copy
