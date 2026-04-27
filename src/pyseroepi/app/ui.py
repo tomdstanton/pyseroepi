@@ -157,7 +157,7 @@ def _burden_ui():
                     ui.input_action_button("btn_estimate_prev", "Estimate Prevalence 🚀", class_="btn-success w-100")
                 ),
                 id="burden_accordion",
-                open="Data Ingestion"
+                open="Load Data 💽"
             ),
             width=350
         ),
@@ -323,25 +323,28 @@ def _logistics_ui():
 # =====================================================================================
 # APP FOOTER (Package Metadata)
 # =====================================================================================
-try:
-    _meta = importlib.metadata.metadata("pyseroepi")
-    __version__ = _meta.get("Version", "dev")
-    
-    # Dynamically extract author info mapped from pyproject.toml
-    _author_raw = _meta.get("Author-email", "Tom Stanton <tomdstanton@gmail.com>")
-    __author_name = _author_raw.split("<")[0].strip() if "<" in _author_raw else _author_raw
-    __author_email = _author_raw.split("<")[1].replace(">", "").strip() if "<" in _author_raw else ""
-except Exception:
-    __version__ = "dev"
-    __author_name = "Tom Stanton"
-    __author_email = "tomdstanton@gmail.com"
+_meta = importlib.metadata.metadata("pyseroepi")
+__version__ = _meta.get("Version", "dev")
+
+# Dynamically extract author info mapped from pyproject.toml
+_author_raw = _meta.get("Author-email", "Tom Stanton <tomdstanton@gmail.com>")
+__author_name = _author_raw.split("<")[0].strip() if "<" in _author_raw else _author_raw
+__author_email = _author_raw.split("<")[1].replace(">", "").strip() if "<" in _author_raw else ""
+# Extract GitHub/Repository URL
+__github_url = "https://github.com/tsta0015/pyseroepi"
+if _meta.get_all("Project-URL"):
+    for url_str in _meta.get_all("Project-URL"):
+        if any(kw in url_str for kw in ["Repository", "Source", "GitHub"]):
+            __github_url = url_str.split(",")[1].strip()
+            break
 
 app_footer = ui.div(
     ui.HTML(f"""
         <div style="text-align: center; font-size: 0.85rem; color: #64748B; border-top: 1px solid #1E293B; padding-top: 15px; padding-bottom: 15px; margin-top: auto;">
             <strong>pyseroepi</strong> v{__version__} &bull; 
-            Built by <a href="mailto:{__author_email}" style="color: #0EA5E9; text-decoration: none;">{__author_name}</a> &bull; 
-            <a href="https://pypi.org/project/pyseroepi/" target="_blank" style="color: #0EA5E9; text-decoration: none;">PyPI Package</a>
+            Built by <a href="mailto:{__author_email}" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-envelope-fill"></i> {__author_name}</a> &bull; 
+            <a href="{__github_url}" target="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-github"></i> GitHub</a> &bull; 
+            <a href="https://pypi.org/project/pyseroepi/" target="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-box-seam-fill"></i> PyPI</a>
         </div>
     """),
     class_="container-fluid d-flex flex-column justify-content-end"
@@ -368,6 +371,9 @@ main_ui = ui.page_navbar(
     header=ui.tags.head(
         # 1. This unlocks the drag-and-drop Selectize plugin
         ui.tags.script(src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"),
+
+        # 1b. Load Bootstrap Icons for the footer
+        ui.tags.link(rel="stylesheet", href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"),
 
     # 2. Custom JS handler to dynamically show/hide navigation tabs
     ui.tags.script("""

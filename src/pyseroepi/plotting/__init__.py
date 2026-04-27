@@ -70,11 +70,11 @@ class CompositionBarPlotter(BasePlotter):
 
         # Apply the global theme and force the stacking mode
         return fig.update_layout(
-            dict1=cls._THEME,
             barmode='stack',
             title=f"<b>{title_prefix}</b><br><sup>Stratified by {strata_label}</sup>",
             yaxis_title="Cumulative Prevalence",
-            yaxis=dict(tickformat='.0%')  # Renders 0.8 as 80%
+            yaxis=dict(tickformat='.0%'),  # Renders 0.8 as 80%
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -121,12 +121,10 @@ class CompositionHeatmapPlotter(BasePlotter):
         pivot_df['total_burden'] = pivot_df.sum(axis=1)
         pivot_df = pivot_df.sort_values('total_burden', ascending=True).drop(columns=['total_burden'])
 
-        # 4. The Midnight Fluorescence Color Scale
-        # We blend from the Slate background to your Electric Cyan
-        slate_bg = cls._THEME['plot_bgcolor']
+        # 4. Transparent Color Scale
         cyan_accent = cls._MAIN_COLOUR
         custom_colorscale = [
-            [0.0, slate_bg],  # 0% prevalence fades perfectly into the background
+            [0.0, 'rgba(0,0,0,0)'],  # 0% prevalence fades perfectly into the background
             [0.3, '#38BDF8'],  # Soft mid-tone for lower prevalences
             [1.0, cyan_accent]  # Maximum intensity for the dominant clones
         ]
@@ -142,10 +140,10 @@ class CompositionHeatmapPlotter(BasePlotter):
         ))
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>{title_prefix}</b><br><sup>{y_col} vs {x_col}</sup>",
             xaxis_title=x_col.replace('_', ' ').title(),
-            yaxis_title=y_col.replace('_', ' ').title()
+            yaxis_title=y_col.replace('_', ' ').title(),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -225,14 +223,13 @@ class ForestPlotter(BasePlotter):
                 )
             ))
 
-        # Apply the global midnight theme
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Prevalence Estimates</b><br><sup>Target: {target} | Stratified by {', '.join(result.stratified_by)}</sup>",
             xaxis_title="Prevalence (%)",
             yaxis_title=y_col.replace('_', ' ').title(),
             xaxis=dict(tickformat='.0%'),  # Clean percentage formatting on the X-axis
-            yaxis=dict(autorange='reversed')  # Ensures highest rank is at the top
+            yaxis=dict(autorange='reversed'),  # Ensures highest rank is at the top
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -278,7 +275,6 @@ class EpicurvePlotter(BasePlotter):
                 subtitle = f"<br><sup>Trend: {direction} (IRR: {irr:.2f} per time step)</sup>"
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Epidemic Curve: {result.target}</b>{subtitle}",
             xaxis=dict(title="Date", type='date'),
             yaxis=dict(title='Count'),
@@ -286,9 +282,9 @@ class EpicurvePlotter(BasePlotter):
             hovermode="x unified",
             showlegend=True,
             legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                font=dict(color="#94A3B8"), bgcolor="rgba(0,0,0,0)"
-            )
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"
+            ),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -329,16 +325,16 @@ class LongitudinalPrevalencePlotter(BasePlotter):
             x=data[time_col], y=data['estimate'],
             mode='lines+markers',
             line=dict(color=cls._MAIN_COLOUR, width=3),
-            marker=dict(size=8, color='#0F172A', line=dict(width=2, color=cls._MAIN_COLOUR)),
+            marker=dict(size=8, color=cls._MAIN_COLOUR),
             name="Prevalence",
             hovertemplate="<b>Date</b>: %{x}<br><b>Prevalence</b>: %{y:.2%}<extra></extra>"
         ))
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Longitudinal Prevalence of {result.target}</b>",
             xaxis=dict(title=time_col.title()),
-            yaxis=dict(title='Prevalence', tickformat='.0%', range=[0, 1.05])
+            yaxis=dict(title='Prevalence', tickformat='.0%', range=[0, 1.05]),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -398,17 +394,16 @@ class VaccineCoveragePlotter(BasePlotter):
             mode='lines+markers',
             name='Cumulative Coverage',
             line=dict(color=cls._MAIN_COLOUR, width=3),
-            # Using the dark slate background color for the inside of the marker to create a neon ring effect
-            marker=dict(size=8, color='#0F172A', line=dict(width=2, color=cls._MAIN_COLOUR)),
+            marker=dict(size=8, color=cls._MAIN_COLOUR),
             text=hover_text, hoverinfo='text'
         ))
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Cumulative Vaccine Coverage</b><br><sup>Targeting top {len(data)} {target_col} variants</sup>",
             xaxis=dict(title=f"Variant ({target_col}) added to formulation", tickangle=45),
             yaxis=dict(title='Cumulative Population Coverage', tickformat='.0%', range=[0, 1.05]),
-            hovermode="x unified"
+            hovermode="x unified",
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -447,7 +442,7 @@ class ChoroplethPlotter(BasePlotter):
         )
 
         custom_colorscale = [
-            [0.0, '#1E293B'],  # Slate-800
+            [0.0, 'rgba(0,0,0,0)'],  # Transparent
             [1.0, cls._MAIN_COLOUR]  # Electric Cyan
         ]
 
@@ -469,13 +464,13 @@ class ChoroplethPlotter(BasePlotter):
         title_prefix = "Regional Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Regional Prevalence of"
 
         return fig.update_layout(
-            dict1=cls._THEME,
             # Dynamically updates the title so the user knows exactly what is mapped!
             title=f"<b>{title_prefix} {target_name}</b>",
-            mapbox_style="carto-darkmatter",
+            mapbox_style="carto-positron",
             mapbox_zoom=1,
             mapbox_center={"lat": 0, "lon": 0},
-            margin={"r": 0, "t": 60, "l": 0, "b": 0}
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -499,10 +494,9 @@ class SpatialSurfacePlotter(BasePlotter):
             "<br><b>Predicted Prevalence</b>: " + data['estimate'].map('{:.2%}'.format)
         )
 
-        # The Bioluminescence Colorscale
-        # Smooth gradient from the dark map background -> Cyan -> Neon Pink
+        # Smooth gradient from Transparent -> Cyan -> Neon Pink
         custom_colorscale = [
-            [0.0, '#1E293B'],      # Slate-800 (Invisible against the dark UI)
+            [0.0, 'rgba(0,0,0,0)'],     # Transparent
             [0.5, cls._MAIN_COLOUR],    # Electric Cyan (Mid-prevalence)
             [1.0, cls._ACCENT_COLOUR]   # Neon Pink (High-prevalence hotspots)
         ]
@@ -523,12 +517,12 @@ class SpatialSurfacePlotter(BasePlotter):
         title_prefix = "Spatial Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Spatial Surface for"
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>{title_prefix} {result.target}</b><br><sup>Gaussian Process Prediction Surface</sup>",
-            mapbox_style="carto-darkmatter", # Blends seamlessly with the dark theme
+            mapbox_style="carto-positron", # Clean neutral map
             mapbox_zoom=3,
             mapbox_center={"lat": data[lat_col].mean(), "lon": data[lon_col].mean()},
-            margin={"r": 0, "t": 60, "l": 0, "b": 0}
+            margin={"r": 0, "t": 60, "l": 0, "b": 0},
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -572,8 +566,7 @@ class AlphaDiversityPlotter(BasePlotter):
             mode='markers',
             marker=dict(
                 size=12,
-                color='#0F172A',  # Hollow center matching background
-                line=dict(width=3, color=cls._MAIN_COLOUR)  # Glowing cyan border
+                color=cls._MAIN_COLOUR
             ),
             name=metric.title(),
             hovertemplate=f"<b>%{{x}}</b><br>{metric.title()}: %{{y:.3f}}<br>Sequenced (n): %{{customdata}}<extra></extra>",
@@ -581,11 +574,11 @@ class AlphaDiversityPlotter(BasePlotter):
         ))
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Alpha Diversity ({metric.title()})</b><br><sup>Target: {result.target}</sup>",
             xaxis=dict(title=group_col.title() if group_col != 'Global' else ''),
             yaxis=dict(title=f'{metric.title()} Index', rangemode='tozero'),  # Stems must anchor to 0
-            showlegend=False
+            showlegend=False,
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -610,11 +603,9 @@ class BetaHeatmapPlotter(BasePlotter):
         # Hover text configuration
         labels = dist_matrix.columns.tolist()
 
-        # The Bioluminescence Colorscale for Distances
-        # 0 = Identical (Dark Slate, fades into background)
-        # 1 = Completely Dissimilar (Neon Pink Hotspot)
+        # Distances Colorscale
         distance_colorscale = [
-            [0.0, '#1E293B'],  # Slate-800
+            [0.0, 'rgba(0,0,0,0)'],  # Transparent
             [0.5, '#8B5CF6'],  # Deep Purple transition
             [1.0, cls._ACCENT_COLOUR]  # Neon Pink
         ]
@@ -632,13 +623,13 @@ class BetaHeatmapPlotter(BasePlotter):
         ))
 
         return fig.update_layout(
-            dict1=cls._THEME,
             title=f"<b>Beta Diversity ({result.metric.title()})</b><br><sup>Target: {result.target_trait}</sup>",
             xaxis=dict(title='', tickangle=45),
             yaxis=dict(title='', autorange='reversed'),  # Reversing Y puts the triangle in the correct academic orientation
             margin=dict(l=20, r=20, t=60, b=80),  # Extra bottom margin for angled text
             width=700,
-            height=700  # Force a square aspect ratio so the matrix cells are perfect squares
+            height=700,  # Force a square aspect ratio so the matrix cells are perfect squares
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
 
@@ -678,7 +669,7 @@ class StabilityBumpPlotter(BasePlotter):
                 mode='lines+markers',
                 name=str(target),
                 line=dict(width=4),
-                marker=dict(size=10, color='#0F172A', line=dict(width=2)),  # Midnight hollow ring effect
+                marker=dict(size=10, color=cls._MAIN_COLOUR),
                 hovertemplate="<b>Holdout: %{x}</b><br>Rank: %{y}<extra></extra>"
             ))
 
@@ -692,9 +683,9 @@ class StabilityBumpPlotter(BasePlotter):
         )
 
         return fig.update_layout(
-            **cls._THEME,
             title=f"<b>Target Priority Stability (LOO)</b><br><sup>Targeting Top {valency} {formulation.target} Variants</sup>",
             hovermode="x unified",
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         ).update_xaxes(
             title="Excluded Group (Leave-One-Out)"
         ).update_yaxes(
@@ -773,9 +764,10 @@ class NetworkPlotter(BasePlotter):
         )
 
         return go.Figure(data=[edge_trace, node_trace]).update_layout(
-            dict1=cls._THEME, title=title,
+            title=title,
             showlegend=False, hovermode='closest',
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            margin=dict(b=20, l=5, r=5, t=60)
+            margin=dict(b=20, l=5, r=5, t=60),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )

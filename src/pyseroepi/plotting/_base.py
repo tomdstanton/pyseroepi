@@ -19,49 +19,10 @@ class BasePlotter(ABC):
     optimized for modern web dashboards.
 
     Attributes:
-        _THEME (dict): Global Plotly layout configuration.
         _MAIN_COLOUR (str): Primary color for data (Electric Cyan).
         _CI_COLOUR (str): Color for confidence interval ribbons.
         _ACCENT_COLOUR (str): Secondary highlight color (Neon Pink).
     """
-    # --- GLOBAL THEME: MIDNIGHT FLUORESCENCE ---
-    # A premium, dark-slate aesthetic designed for modern Shiny dashboards
-    _THEME = {
-        'template': 'plotly_dark',
-        'plot_bgcolor': '#0F172A',  # Deep Tailwind Slate-900
-        'paper_bgcolor': '#0F172A',  # Seamless blending with dark UI panels
-        'font': dict(
-            family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-            size=13,
-            color="#94A3B8"  # Soft slate grey for readable axis labels
-        ),
-        'title_font': dict(size=18, color="#F8FAFC", family="Inter, sans-serif"),
-        'margin': dict(l=20, r=20, t=60, b=20),
-
-        # Glassmorphism Hover Tooltips
-        'hoverlabel': dict(
-            bgcolor="rgba(15, 23, 42, 0.85)",
-            bordercolor="#334155",
-            font_size=13,
-            font_family="Inter, sans-serif",
-            font_color="#F8FAFC"
-        ),
-
-        # Crisp, subtle gridlines that don't overwhelm the data
-        'xaxis': dict(
-            showgrid=True, gridcolor='#1E293B', gridwidth=1,
-            zeroline=True, zerolinecolor='#334155', zerolinewidth=1,
-            linecolor='#334155', linewidth=1, ticks='outside',
-            tickcolor='#334155'
-        ),
-        'yaxis': dict(
-            showgrid=True, gridcolor='#1E293B', gridwidth=1,
-            zeroline=True, zerolinecolor='#334155', zerolinewidth=1,
-            linecolor='#334155', linewidth=1, ticks='outside',
-            tickcolor='#334155'
-        )
-    }
-
     # The Hero Palette: Electric Cyan and Neon Pink
     # Cyan is scientifically colorblind-safe while looking stunning on dark backgrounds.
     _MAIN_COLOUR = '#0EA5E9'

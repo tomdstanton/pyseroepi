@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import inspect
 import tempfile
+import re
 import os
 
 from shiny import module, reactive, render, ui
@@ -16,7 +17,7 @@ from sklearn.manifold import MDS
 import pandera.errors
 from joblib import dump as joblib_dump, load as joblib_load
 
-from pyseroepi.app.ui import safe_plot_ui, dt_download_ui
+from pyseroepi.app.ui import dt_download_ui
 from pyseroepi.formulation import CVFormulationDesigner, PostHocFormulationDesigner, Formulation
 from pyseroepi import estimators
 from pyseroepi.io import PathogenwatchKleborateParser
@@ -24,6 +25,22 @@ from pyseroepi.dist import Distances
 from pyseroepi.constants import EstimatorType, AggregationType, PlotType, InferenceMethod
 from pyseroepi.client import PathogenwatchClient
 
+
+# =====================================================================================
+# HELPERS
+# =====================================================================================
+def _format_metadata_ui(meta_dict: dict) -> list:
+    """Helper to cleanly format a dictionary into bolded UI paragraphs."""
+    formatted_ui = []
+    for k, v in meta_dict.items():
+        if isinstance(v, list):
+            val_str = ", ".join(map(str, v)) if v else "None"
+        elif hasattr(v, 'value'):
+            val_str = str(v.value).title()
+        else:
+            val_str = str(v)
+        formatted_ui.append(ui.p(ui.tags.strong(f"{k.replace('_', ' ').title()}: "), val_str, class_="mb-1"))
+    return formatted_ui
 
 # =====================================================================================
 # REUSABLE MODULES
@@ -57,9 +74,9 @@ def dt_download_server(input, output, session, data_callable: Callable, filename
         return render.DataTable(df, selection_mode="none", height=height, filters=True)
 
     @render.download(filename=filename)
-    def btn_download():
+    async def btn_download():
         if (df := data_callable()) is not None:
-            yield df.to_csv(index=False)
+            yield await asyncio.to_thread(df.to_csv, index=False)
 
 # =====================================================================================
 # MODULE 1: GLOBAL BURDEN (Tab 1)
@@ -87,6 +104,11 @@ def _burden_server(input, output, session, app_state: dict):
         for tab, show in tabs:
             await session.send_custom_message("toggle_tab", {"tab": tab, "show": show})
 
+    @reactive.Effect
+    def manage_accordion_state():
+        if shared_df.get() is None:
+            ui.update_accordion("burden_accordion", show="Load Data 💽")
+
     # --- STAGE 1: DYNAMIC COLUMN MAPPING ---
     @render.ui
     def dynamic_meta_mapping():
@@ -96,6 +118,30 @@ def _burden_server(input, output, session, app_state: dict):
         try:
             # PEEK AT THE HEADERS: nrows=0 makes this parse instantly
             cols = pd.read_csv(meta_info[0]["datapath"], nrows=0).columns.tolist()
+
+            # Define aliases for intelligent column guessing
+            aliases = {
+                "map_id": ["sample", "id", "isolate", "name", "run", "barcode"],
+                "map_date": ["date", "year", "collection", "time"],
+                "map_country": ["country", "nation"],
+                "map_lat": ["lat", "latitude"],
+                "map_lon": ["lon", "long", "longitude"]
+            }
+
+            def guess_match(field_id: str, available_cols: list[str]) -> str:
+                targets = aliases.get(field_id, [])
+                lower_cols = [c.lower().strip() for c in available_cols]
+                
+                # 1. Exact match first (e.g. 'sample_id' == 'sample_id')
+                for t in targets:
+                    if t in lower_cols: return available_cols[lower_cols.index(t)]
+                        
+                # 2. Substring match (e.g. 'collection' in 'collection_date')
+                for t in targets:
+                    for i, c in enumerate(lower_cols):
+                        if t == 'id' and not re.search(r'\bid\b', c.replace('_', ' ')): continue # Prevent 'id' matching 'width'
+                        if t in c: return available_cols[i]
+                return ""
 
             # Clean setup for UI mapping fields to avoid repetitive code
             mapping_fields = [
@@ -111,7 +157,7 @@ def _burden_server(input, output, session, app_state: dict):
                 ui.accordion_panel(
                     "Map Metadata Columns",
                     ui.p("Please match your columns to the required fields:", class_="text-muted small"),
-                    *[ui.input_selectize(idx, label, choices=[""] + cols, selected="") for idx, label in mapping_fields]
+                    *[ui.input_selectize(idx, label, choices=[""] + cols, selected=guess_match(idx, cols)) for idx, label in mapping_fields]
                 ),
                 id="meta_accordion",
                 open="Map Metadata Columns"
@@ -180,7 +226,7 @@ def _burden_server(input, output, session, app_state: dict):
                 ui.notification_show("Data successfully loaded.", type="message", duration=4)
 
                 # Automatically advance the accordion to the prevalence panel
-                ui.update_accordion("burden_accordion", show="Cluster Generation")
+                ui.update_accordion("burden_accordion", show="Cluster Generation 🕸️")
 
             except pandera.errors.SchemaError as e:
                 ui.notification_show("Validation Error: Uploaded data does not match the required Kleborate schema. Please check your file.", type="error", duration=15)
@@ -270,22 +316,21 @@ def _burden_server(input, output, session, app_state: dict):
                 ui.notification_show(f"Loaded {len(df)} genomes from Pathogenwatch.", type="message", duration=4)
                 
                 # Automatically advance the accordion
-                ui.update_accordion("burden_accordion", show="Cluster Generation")
+                ui.update_accordion("burden_accordion", show="Cluster Generation 🕸️")
                 
             except Exception as e:
                 ui.notification_show(f"Load Error: {str(e)}", type="error", duration=15)
 
     @render.download(filename="pyseroepi_workspace.sero")
-    def btn_save_workspace():
+    async def btn_save_workspace():
         export_state = {k: v.get() for k, v in app_state.items()}
         
         fd, temp_path_str = tempfile.mkstemp(suffix=".sero")
         os.close(fd)
         path = Path(temp_path_str)
         
-        joblib_dump(export_state, path)
-        
-        data = path.read_bytes()
+        await asyncio.to_thread(joblib_dump, export_state, path)
+        data = await asyncio.to_thread(path.read_bytes)
         path.unlink()
         yield data
 
@@ -311,7 +356,7 @@ def _burden_server(input, output, session, app_state: dict):
                 ui.notification_show("Session successfully restored.", type="message")
                 
                 # Jump to preview to confirm data loaded
-                ui.update_accordion("burden_accordion", show="Cluster Generation")
+                ui.update_accordion("burden_accordion", show="Cluster Generation 🕸️")
                 
             except Exception as e:
                 ui.notification_show(f"Failed to restore workspace: {str(e)}", type="error", duration=15)
@@ -525,15 +570,15 @@ def _burden_server(input, output, session, app_state: dict):
         ui.notification_show("Fitted model cleared from memory.", type="message")
 
     @render.download(filename=lambda: f"fitted_{EstimatorType(input.prev_estimator()).name.lower()}_model.pkl")
-    def model_download():
+    async def model_download():
         est = fitted_estimator.get()
         if est and getattr(est, 'is_fitted_', False):
-            fd, path = tempfile.mkstemp(suffix=".pkl")
+            fd, temp_path_str = tempfile.mkstemp(suffix=".pkl")
             os.close(fd)
-            est.save_model(path)
-            with open(path, "rb") as f:
-                data = f.read()
-            os.remove(path)
+            path = Path(temp_path_str)
+            await asyncio.to_thread(est.save_model, path)
+            data = await asyncio.to_thread(path.read_bytes)
+            path.unlink()
             yield data
 
     @reactive.Effect
@@ -583,7 +628,7 @@ def _burden_server(input, output, session, app_state: dict):
                 p.set(message="Done!", value=100)
                 ui.notification_show("Data aggregated successfully!", type="message")
                 ui.update_accordion("burden_accordion", show="Prevalence Estimation 🤖")
-                ui.update_navs("main_dashboard_tabs", selected="tab_aggregated_data")
+                ui.update_navset("main_dashboard_tabs", selected="tab_aggregated_data")
                 
             except Exception as e:
                 ui.notification_show(f"Aggregation Error: {str(e)}", type="error", duration=15)
@@ -677,7 +722,7 @@ def _burden_server(input, output, session, app_state: dict):
                 
                 ui.notification_show("Prevalence calculated successfully! Check the plot tab.", type="message")
                 p.set(message="Done", value=100)
-                ui.update_navs("main_dashboard_tabs", selected="tab_prevalence_plot")
+                ui.update_navset("main_dashboard_tabs", selected="tab_prevalence_plot")
                 await asyncio.sleep(0)
             except Exception as e:
                 ui.notification_show(f"Calculation Error: {str(e)}", type="error", duration=15)
@@ -698,17 +743,7 @@ def _burden_server(input, output, session, app_state: dict):
             return ui.div("Please aggregate data in the sidebar to view the aggregated dataset.", class_="text-center mt-5 text-muted fs-4")
 
         meta_dict = agg_df.attrs.get('metric_meta', {})
-        formatted_meta = {}
-        for k, v in meta_dict.items():
-            if isinstance(v, list):
-                val_str = ", ".join(map(str, v)) if v else "None"
-            elif hasattr(v, 'value'):
-                val_str = str(v.value).title()
-            else:
-                val_str = str(v)
-            formatted_meta[k.replace('_', ' ').title()] = val_str
-
-        meta_ui = [ui.p(ui.tags.strong(f"{k}: "), v, class_="mb-1") for k, v in formatted_meta.items()]
+        meta_ui = _format_metadata_ui(meta_dict)
 
         return ui.div(
             ui.card(ui.card_header("Aggregates Metadata"), ui.div(*meta_ui, class_="p-2")),
@@ -722,25 +757,9 @@ def _burden_server(input, output, session, app_state: dict):
         if (res := prev_results.get()) is None:
             return ui.div("Calculate prevalence to view the results data.", class_="text-center mt-5 text-muted fs-4")
 
-        # Dynamically extract instance attributes (excluding the large dataframe itself)
-        meta_dict = {}
-        for f in dataclasses.fields(res):
-            if f.name in ['data', 'model_results']:
-                continue
-            
-            val = getattr(res, f.name)
-            
-            # Safely format lists, enums, or basic strings
-            if isinstance(val, list):
-                val_str = ", ".join(map(str, val)) if val else "None"
-            elif hasattr(val, 'value'):
-                val_str = str(val.value).title()
-            else:
-                val_str = str(val)
-                
-            meta_dict[f.name.replace('_', ' ').title()] = val_str
-
-        meta_ui = [ui.p(ui.tags.strong(f"{k}: "), v, class_="mb-1") for k, v in meta_dict.items()]
+        # Dynamically extract instance attributes into a dictionary
+        meta_dict = {f.name: getattr(res, f.name) for f in dataclasses.fields(res) if f.name not in ['data', 'model_results']}
+        meta_ui = _format_metadata_ui(meta_dict)
 
         return ui.div(
             ui.card(ui.card_header("Estimates Metadata"), ui.div(*meta_ui, class_="p-2")),
@@ -775,11 +794,11 @@ def _burden_server(input, output, session, app_state: dict):
     safe_plot_server("prev_plot", data_reactive=prev_results, plot_type=input.prev_plot_type)
 
     @render.download(filename=lambda: f"prevalence_plot.{input.plot_format()}")
-    def btn_download_plot():
+    async def btn_download_plot():
         res = prev_results.get()
         if res is None:
             ui.notification_show("No plot data available to export.", type="warning")
-            return None
+            return
             
         try:
             # Generate the raw Plotly Figure (go.Figure) from the registry
@@ -790,14 +809,16 @@ def _burden_server(input, output, session, app_state: dict):
             path = Path(temp_path_str)
             
             # Kaleido naturally intercepts write_image locally
-            fig.write_image(str(path), format=input.plot_format(), width=input.plot_width(), height=input.plot_height())
-            
-            data = path.read_bytes()
+            def save_fig():
+                fig.write_image(str(path), format=input.plot_format(), width=input.plot_width(), height=input.plot_height())
+                return path.read_bytes()
+                
+            data = await asyncio.to_thread(save_fig)
             path.unlink()
             yield data
         except Exception as e:
             ui.notification_show(f"Plot Export Error: {str(e)}", type="error", duration=10)
-            return None
+            return
 
     @reactive.Calc
     async def network_layout():
@@ -949,7 +970,7 @@ def _formulation_server(input, output, session, app_state: dict):
                 p.set(message="Rendering dashboards...", value=95)
                 await asyncio.sleep(0)
                 ui.notification_show("Optimal Formulation Designed!", type="message")
-                ui.update_navs("formulation_tabs", selected="tab_form_plots")
+                ui.update_navset("formulation_tabs", selected="tab_form_plots")
 
             except Exception as e:
                 ui.notification_show(f"Designer Error: {str(e)}", type="error", duration=10)
