@@ -35,6 +35,7 @@ class PlotType(_UiEnum):
     SPATIAL_SURFACE = auto()
     ALPHA_DIVERSITY = auto()
     BETA_HEATMAP = auto()
+    NETWORK = auto()
 
 
 class HoldoutStrategy(_UiEnum):
@@ -51,3 +52,24 @@ class MetricType(_UiEnum):
 class AggregationType(_UiEnum):
     TRAIT = auto()
     COMPOSITIONAL = auto()
+
+
+class EstimatorType(_UiEnum):
+    FREQUENTIST = auto()
+    BAYESIAN = auto()
+    REGRESSION = auto()
+    SPATIAL = auto()
+
+    @property
+    def class_name(self) -> str:
+        return {
+            self.FREQUENTIST: "FrequentistPrevalenceEstimator",
+            self.BAYESIAN: "BayesianPrevalenceEstimator",
+            self.REGRESSION: "RegressionPrevalenceEstimator",
+            self.SPATIAL: "SpatialPrevalenceEstimator",
+        }[self]
+
+
+class InferenceMethod(_UiEnum):
+    MCMC = "mcmc"
+    SVI = "svi"

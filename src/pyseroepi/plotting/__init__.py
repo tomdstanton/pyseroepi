@@ -1,23 +1,44 @@
+from typing import Union
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from pyseroepi.plotting._base import BasePlotter
-from pyseroepi.constants import PlotType
+from pyseroepi.constants import PlotType, AggregationType
 from pyseroepi import estimators
 from pyseroepi.formulation import Formulation
+from pyseroepi.dist import Distances
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
-@BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.COMPOSITION_BAR)
+@BasePlotter.register_plotter((estimators.PrevalenceEstimates, Formulation), PlotType.COMPOSITION_BAR)
 class CompositionBarPlotter(BasePlotter):
 
     @classmethod
-    def render(cls, result: 'estimators.PrevalenceEstimates', **kwargs) -> go.Figure:
-        df = result.data.copy()
-        target = result.target
-
-        # Detect if we have a grouping variable (e.g., 'country')
-        group_cols = [c for c in result.stratified_by if c != target]
+    def render(cls, result: Union['estimators.PrevalenceEstimates', Formulation], **kwargs) -> go.Figure:
+        is_formulation = isinstance(result, Formulation)
+        
+        if is_formulation:
+            df = result.rankings.copy()
+            target = result.target
+            # The formulation dataframe strictly renames the target column to 'target'. Rename it back for plotting.
+            df.rename(columns={'target': target}, inplace=True)
+            
+            # Filter to only show the antigens selected in the vaccine formulation
+            df = df[df[target].isin(result.get_formulation())]
+            
+            group_cols = []
+            strata_label = "Global Baseline"
+            title_prefix = "Vaccine Formulation Composition"
+        else:
+            is_comp = getattr(result, 'aggregation_type', 'unknown') == AggregationType.COMPOSITIONAL
+            if not is_comp:
+                raise ValueError("Composition Bar Plot strictly requires Compositional aggregation mode.")
+    
+            df = result.data.copy()
+            target = result.target
+            group_cols = [c for c in result.stratified_by if c != target]
+            strata_label = ', '.join(result.stratified_by)
+            title_prefix = "Sample Composition"
 
         fig = go.Figure()
 
@@ -51,7 +72,7 @@ class CompositionBarPlotter(BasePlotter):
         return fig.update_layout(
             dict1=cls._THEME,
             barmode='stack',
-            title=f"<b>Formulation Composition</b><br><sup>Stratified by {', '.join(result.stratified_by)}</sup>",
+            title=f"<b>{title_prefix}</b><br><sup>Stratified by {strata_label}</sup>",
             yaxis_title="Cumulative Prevalence",
             yaxis=dict(tickformat='.0%')  # Renders 0.8 as 80%
         )
@@ -64,22 +85,34 @@ class CompositionHeatmapPlotter(BasePlotter):
     def render(cls, result: 'estimators.PrevalenceEstimates', **kwargs) -> go.Figure:
         df = result.data.copy()
         target = result.target
-        group_cols = [c for c in result.stratified_by if c != target]
+        is_comp = getattr(result, 'aggregation_type', 'unknown') == AggregationType.COMPOSITIONAL
 
-        # 1. The Strict Safeguard
-        if len(group_cols) != 1:
-            raise ValueError(
-                f"Composition Heatmap strictly requires exactly 2 stratification variables (Target + 1 Group). "
-                f"Found target '{target}' and groups: {group_cols}"
-            )
-
-        group_col = group_cols[0]
+        if not is_comp:
+            # Trait Heatmap
+            if len(result.stratified_by) != 2:
+                raise ValueError(
+                    f"Trait Heatmap strictly requires exactly 2 stratification variables. "
+                    f"Found: {result.stratified_by}"
+                )
+            y_col = result.stratified_by[0]
+            x_col = result.stratified_by[1]
+            title_prefix = "Prevalence Matrix"
+        else:
+            y_col = target
+            group_cols = [c for c in result.stratified_by if c != target]
+            if len(group_cols) != 1:
+                raise ValueError(
+                    f"Composition Heatmap strictly requires exactly 1 grouping variable alongside the target. "
+                    f"Found target '{target}' and groups: {group_cols}"
+                )
+            x_col = group_cols[0]
+            title_prefix = "Density Matrix"
 
         # 2. Reshape from Long to Wide (The Z-Matrix)
         # fill_value=0 ensures that if a K-locus isn't found in a country, it shows as empty, not NaN
         pivot_df = df.pivot_table(
-            index=target,
-            columns=group_col,
+            index=y_col,
+            columns=x_col,
             values='estimate',
             fill_value=0
         )
@@ -105,14 +138,14 @@ class CompositionHeatmapPlotter(BasePlotter):
             colorscale=custom_colorscale,
             showscale=True,  # Shows the colorbar legend on the right
             colorbar=dict(tickformat='.0%'),
-            hovertemplate=f"<b>%{{y}}</b><br>{group_col}: %{{x}}<br>Prevalence: %{{z:.1%}}<extra></extra>"
+            hovertemplate=f"<b>%{{y}}</b><br>{x_col}: %{{x}}<br>Prevalence: %{{z:.1%}}<extra></extra>"
         ))
 
         return fig.update_layout(
             dict1=cls._THEME,
-            title=f"<b>Prevalence Density Matrix</b><br><sup>{target} vs {group_col}</sup>",
-            xaxis_title=group_col,
-            yaxis_title=target
+            title=f"<b>{title_prefix}</b><br><sup>{y_col} vs {x_col}</sup>",
+            xaxis_title=x_col.replace('_', ' ').title(),
+            yaxis_title=y_col.replace('_', ' ').title()
         )
 
 
@@ -123,11 +156,16 @@ class ForestPlotter(BasePlotter):
     @classmethod
     def render(cls, result: 'estimators.PrevalenceEstimates', sort_by: str = 'estimate', **kwargs) -> go.Figure:
         df = result.data.copy()
-        target = result.target  # e.g., 'K_locus'
+        target = result.target
+        is_comp = getattr(result, 'aggregation_type', 'unknown') == AggregationType.COMPOSITIONAL
 
-        # 1. Detect if there is a secondary grouping variable (e.g., 'country')
-        group_cols = [c for c in result.stratified_by if c != target]
-        group_col = group_cols[0] if group_cols else None
+        if is_comp:
+            y_col = target
+            group_cols = [c for c in result.stratified_by if c != target]
+            color_col = group_cols[0] if group_cols else None
+        else:
+            y_col = result.stratified_by[0] if result.stratified_by else target
+            color_col = result.stratified_by[1] if len(result.stratified_by) > 1 else None
 
         # Sort the dataframe so the highest prevalences appear at the top
         if sort_by in df.columns:
@@ -135,13 +173,12 @@ class ForestPlotter(BasePlotter):
 
         fig = go.Figure()
 
-        if group_col:
+        if color_col:
             # --- MULTI-VARIABLE: Grouped Forest Plot ---
-            # We plot each group as its own trace to generate a legend and unique colors
-            for group_name, group_df in df.groupby(group_col):
+            for group_name, group_df in df.groupby(color_col):
                 fig.add_trace(go.Scatter(
                     x=group_df['estimate'],
-                    y=group_df[target],
+                    y=group_df[y_col],
                     name=str(group_name),
                     mode='markers',
                     marker=dict(size=10, symbol='square'),
@@ -153,11 +190,10 @@ class ForestPlotter(BasePlotter):
                         width=0,  # Removes the vertical caps for a cleaner "Tufte" look
                         thickness=2
                     ),
-                    # Injecting the extra data directly into the hover state
-                    customdata=group_df[[group_col, 'lower', 'upper']].values,
+                    customdata=group_df[[color_col, 'lower', 'upper']].values,
                     hovertemplate=(
-                        f"<b>{target}:</b> %{{y}}<br>"
-                        f"<b>{group_col}:</b> %{{customdata[0]}}<br>"
+                        f"<b>{y_col}:</b> %{{y}}<br>"
+                        f"<b>{color_col}:</b> %{{customdata[0]}}<br>"
                         "<b>Prevalence:</b> %{x:.1%}<br>"
                         "<b>95% CI:</b> %{customdata[1]:.1%} - %{customdata[2]:.1%}<extra></extra>"
                     )
@@ -170,7 +206,7 @@ class ForestPlotter(BasePlotter):
             # --- SINGLE-VARIABLE: Standard Forest Plot ---
             fig.add_trace(go.Scatter(
                 x=df['estimate'],
-                y=df[target],
+                y=df[y_col],
                 mode='markers',
                 marker=dict(size=10, color=cls._MAIN_COLOUR, symbol='square'),
                 error_x=dict(
@@ -183,7 +219,7 @@ class ForestPlotter(BasePlotter):
                 ),
                 customdata=df[['lower', 'upper']].values,
                 hovertemplate=(
-                    f"<b>{target}:</b> %{{y}}<br>"
+                    f"<b>{y_col}:</b> %{{y}}<br>"
                     "<b>Prevalence:</b> %{x:.1%}<br>"
                     "<b>95% CI:</b> %{customdata[0]:.1%} - %{customdata[1]:.1%}<extra></extra>"
                 )
@@ -192,9 +228,9 @@ class ForestPlotter(BasePlotter):
         # Apply the global midnight theme
         return fig.update_layout(
             dict1=cls._THEME,
-            title=f"<b>Prevalence Estimates</b><br><sup>Stratified by {', '.join(result.stratified_by)}</sup>",
+            title=f"<b>Prevalence Estimates</b><br><sup>Target: {target} | Stratified by {', '.join(result.stratified_by)}</sup>",
             xaxis_title="Prevalence (%)",
-            yaxis_title=target,
+            yaxis_title=y_col.replace('_', ' ').title(),
             xaxis=dict(tickformat='.0%'),  # Clean percentage formatting on the X-axis
             yaxis=dict(autorange='reversed')  # Ensures highest rank is at the top
         )
@@ -392,7 +428,7 @@ class ChoroplethPlotter(BasePlotter):
 
         # --- THE FIX: Isolate the specific variant for compositional data ---
         target_name = result.target
-        if result.aggregation_type == "compositional":
+        if result.aggregation_type == AggregationType.COMPOSITIONAL:
             if target_variant is None:
                 # Safely default to the most frequent variant if the user forgot to specify one
                 target_variant = data.groupby(target_name)['event'].sum().idxmax()
@@ -430,7 +466,7 @@ class ChoroplethPlotter(BasePlotter):
             hoverinfo='text'
         ))
 
-        title_prefix = "Regional Composition of" if result.aggregation_type == "compositional" else "Regional Prevalence of"
+        title_prefix = "Regional Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Regional Prevalence of"
 
         return fig.update_layout(
             dict1=cls._THEME,
@@ -484,7 +520,7 @@ class SpatialSurfacePlotter(BasePlotter):
             colorbar_title='Predicted<br>Prevalence'
         ))
 
-        title_prefix = "Spatial Composition of" if result.aggregation_type == "compositional" else "Spatial Surface for"
+        title_prefix = "Spatial Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Spatial Surface for"
 
         return fig.update_layout(
             dict1=cls._THEME,
@@ -612,7 +648,7 @@ class StabilityBumpPlotter(BasePlotter):
     @classmethod
     def render(cls, formulation: 'Formulation', **kwargs) -> go.Figure:
         """
-        Plots a Slopegraph (Bump Chart) showing how antigen ranks shift
+        Plots a Slopegraph (Bump Chart) showing how target ranks shift
         when different data groups are held out.
         """
         history = formulation.permutation_history.copy()
@@ -621,17 +657,17 @@ class StabilityBumpPlotter(BasePlotter):
 
         fig = go.Figure()
 
-        # We only want to plot the lines for antigens that actually made it into the baseline formulation
-        top_antigens = baseline.head(valency)['antigen'].tolist()
+        # We only want to plot the lines for targets that actually made it into the baseline formulation
+        top_targets = baseline.head(valency)['target'].tolist()
 
         # X-axis categories: Baseline first, then all the holdout permutations
         x_categories = ['Baseline'] + history['holdout_group'].unique().tolist()
 
-        for antigen in top_antigens:
-            v_history = history[history['antigen'] == antigen]
+        for target in top_targets:
+            v_history = history[history['target'] == target]
 
             # Build the Y-coordinates (Ranks) mapping to the X-coordinates
-            y_ranks = [baseline[baseline['antigen'] == antigen]['baseline_rank'].values[0]]
+            y_ranks = [baseline[baseline['target'] == target]['baseline_rank'].values[0]]
             for group in x_categories[1:]:
                 rank = v_history[v_history['holdout_group'] == group]['loo_rank'].values
                 y_ranks.append(rank[0] if len(rank) > 0 else np.nan)
@@ -640,7 +676,7 @@ class StabilityBumpPlotter(BasePlotter):
                 x=x_categories,
                 y=y_ranks,
                 mode='lines+markers',
-                name=str(antigen),
+                name=str(target),
                 line=dict(width=4),
                 marker=dict(size=10, color='#0F172A', line=dict(width=2)),  # Midnight hollow ring effect
                 hovertemplate="<b>Holdout: %{x}</b><br>Rank: %{y}<extra></extra>"
@@ -657,7 +693,7 @@ class StabilityBumpPlotter(BasePlotter):
 
         return fig.update_layout(
             **cls._THEME,
-            title=f"<b>Antigen Priority Stability (LOO)</b><br><sup>Targeting Top {valency} {formulation.target} Variants</sup>",
+            title=f"<b>Target Priority Stability (LOO)</b><br><sup>Targeting Top {valency} {formulation.target} Variants</sup>",
             hovermode="x unified",
         ).update_xaxes(
             title="Excluded Group (Leave-One-Out)"
@@ -667,3 +703,79 @@ class StabilityBumpPlotter(BasePlotter):
             dtick=1
         )
 
+
+@BasePlotter.register_plotter(Distances, PlotType.NETWORK)
+class NetworkPlotter(BasePlotter):
+
+    @classmethod
+    def render(cls, result: Distances, df: pd.DataFrame = None, pos: np.ndarray = None,
+               edge_type: str = 'snp', threshold: int = 20, trans_col: str = None,
+               color_col: str = None, **kwargs) -> go.Figure:
+        """
+        Plots an interactive force-directed network using MDS coordinates.
+        """
+        dense_dist = result.matrix.toarray().astype(float)
+
+        # Fallback to calculate MDS if it wasn't passed in via a cache
+        if pos is None:
+            from sklearn.manifold import MDS
+            mask = (dense_dist == 0) & (~np.eye(dense_dist.shape[0], dtype=bool))
+            if mask.any():
+                dense_dist[mask] = dense_dist.max() * 2
+            mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42, n_init=1, max_iter=100)
+            pos = mds.fit_transform(dense_dist)
+
+        # Align the dataframe rows to perfectly match the distance matrix index
+        if df is not None and 'sample_id' in df.columns:
+            df_aligned = df.set_index('sample_id').reindex(result.index)
+        else:
+            df_aligned = pd.DataFrame(index=result.index)
+
+        edge_x, edge_y = [], []
+        title = "<b>Isolate Network</b><br><sup>Nodes positioned by SNP distance (MDS)</sup>"
+
+        if edge_type == "snp":
+            adj = (dense_dist <= threshold).astype(int)
+            np.fill_diagonal(adj, 0)
+            rows, cols = np.where(adj == 1)
+            for r, c in zip(rows, cols):
+                if r < c:
+                    edge_x.extend([pos[r, 0], pos[c, 0], None])
+                    edge_y.extend([pos[r, 1], pos[c, 1], None])
+            title = f"<b>Genomic SNP Network</b><br><sup>Edges connect isolates ≤ {threshold} SNPs apart</sup>"
+
+        elif edge_type == "trans" and trans_col and trans_col in df_aligned.columns:
+            cluster_assignments = df_aligned[trans_col].values
+            unique_clusters = df_aligned[trans_col].dropna().unique()
+            for c in unique_clusters:
+                idx = np.where(cluster_assignments == c)[0]
+                for i in range(len(idx)):
+                    for j in range(i + 1, len(idx)):
+                        edge_x.extend([pos[idx[i], 0], pos[idx[j], 0], None])
+                        edge_y.extend([pos[idx[i], 1], pos[idx[j], 1], None])
+            title = f"<b>Transmission Network</b><br><sup>Edges connect isolates in {trans_col.replace('_', ' ').title()}</sup>"
+
+        edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.4, color='#888'), hoverinfo='none', mode='lines')
+
+        if color_col and color_col in df_aligned.columns:
+            color_vals = df_aligned[color_col].fillna("Unknown").astype(str)
+            color_map = {c: i for i, c in enumerate(color_vals.unique())}
+            colors = [color_map[c] for c in color_vals]
+            hover_text = [f"ID: {idx}<br>{color_col}: {c}" for idx, c in zip(result.index, color_vals)]
+            marker_dict = dict(showscale=False, color=colors, colorscale='Turbo', size=10, line=dict(width=1, color='white'))
+        else:
+            hover_text = [f"ID: {idx}" for idx in result.index]
+            marker_dict = dict(color=cls._MAIN_COLOUR, size=10, line=dict(width=1, color='white'))
+
+        node_trace = go.Scatter(
+            x=pos[:, 0], y=pos[:, 1], mode='markers',
+            hovertext=hover_text, hoverinfo="text", marker=marker_dict
+        )
+
+        return go.Figure(data=[edge_trace, node_trace]).update_layout(
+            dict1=cls._THEME, title=title,
+            showlegend=False, hovermode='closest',
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            margin=dict(b=20, l=5, r=5, t=60)
+        )

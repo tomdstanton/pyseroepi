@@ -2,6 +2,13 @@
 Module for estimating trait prevalence, diversity and incidence among isolates.
 """
 
+from pyseroepi.estimators._base import (
+    Estimates,
+    PrevalenceEstimates,
+    IncidenceEstimates,
+    AlphaDiversityEstimates,
+    BetaDiversityEstimates,
+)
 from pyseroepi.estimators._core import (
     FrequentistPrevalenceEstimator,
     AlphaDiversityEstimator,
@@ -9,6 +16,11 @@ from pyseroepi.estimators._core import (
 )
 
 __all__ = [
+    "Estimates",
+    "PrevalenceEstimates",
+    "IncidenceEstimates",
+    "AlphaDiversityEstimates",
+    "BetaDiversityEstimates",
     "FrequentistPrevalenceEstimator",
     "AlphaDiversityEstimator",
     "BetaDiversityEstimator",

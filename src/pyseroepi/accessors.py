@@ -248,6 +248,18 @@ class EpiAccessor:
 
         return core_genos + trait_genos
 
+    @property
+    def stratify_cols(self) -> list[str]:
+        """Returns columns suitable for stratification (excluding QC, metadata, and high-cardinality/internal cols)."""
+        exclude_strat = ['sample_id', 'latitude', 'longitude', 'date_resolution', 'spatial_resolution']
+        return [c for c in self._obj.columns if not c.startswith(('qc_', 'meta_')) and c not in exclude_strat]
+
+    @property
+    def cluster_cols(self) -> list[str]:
+        """Returns columns suitable for cluster adjustment (e.g., transmission clusters and ST)."""
+        return [c for c in self._obj.columns if 'cluster' in c.lower() or c in ['ST']]
+
+
     def aggregate_prevalence(self, stratify_by: list[str], target_col: str = None,
                              cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-') -> pd.DataFrame:
         """
@@ -325,6 +337,10 @@ class EpiAccessor:
             agg_df = agg_df.reset_index().fillna({'n': 0})
 
         agg_df = agg_df[agg_df['n'] > 0].copy()
+
+        # Re-inject the target column so that plotting methods can reliably find it by name
+        if target_col:
+            agg_df[target_col] = target_col
 
         agg_df.attrs = self._obj.attrs.copy()
         agg_df.attrs['metric_meta'] = {
@@ -479,6 +495,10 @@ class EpiAccessor:
         # Unlike Prevalence, we do NOT drop rows where total_sequenced == 0.
         # A true 0 sequence volume is critical information for an epicurve gap.
         inc_df = inc_df.rename(columns={'date_bin': 'date'})
+
+        # Re-inject the target column for consistent plotting downstream
+        if target_col:
+            inc_df[target_col] = target_col
 
         inc_df.attrs = self._obj.attrs.copy()
         inc_df.attrs['metric_meta'] = {

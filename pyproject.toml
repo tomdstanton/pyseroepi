@@ -18,8 +18,13 @@ dependencies = [
 spatial = ['geopandas']
 models = ["numpyro", "statsmodels", "joblib"]
 client = ["requests", "urllib3"]
-plot = ["plotly>=6.6.0", "kaleido", "kaptive-plot"]
-app = ["pyseroepi[spatial,models,client,plot]", "shiny", "shinywidgets", "shinyswatch", "itables", "htmltools"]
+plot = ["plotly>=6.6.0", "kaleido"]
+app = [
+    "pyseroepi[spatial,models,client,plot]",
+    "shiny",
+    "shinywidgets",
+    "shinyswatch"
+]
 
 # THESE ARE ONLY FOR YOU (Local development, testing, and docs)
 [dependency-groups]

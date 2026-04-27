@@ -78,6 +78,28 @@ class Distances:
             raise ValueError("Number of labels must match matrix dimensions.")
         self.index.name = 'sample_id'
 
+    def plot(self, kind: str, **kwargs):
+        """
+        Renders a visualization of the distance matrix.
+
+        Args:
+            kind: The type of plot to render (e.g., 'network').
+            **kwargs: Additional arguments passed to the plotter.
+
+        Returns:
+            A plotly Figure object.
+        """
+        try:
+            from pyseroepi.plotting._base import BasePlotter
+        except ImportError:
+            raise ImportError("Plotting features require the optional 'plot' dependencies.\n"
+                              "Please install them by running: pip install pyseroepi[plot]") from None
+
+        plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
+        if (plotter := plotter_map.get(kind)) is None:
+            raise ValueError(f"Plot type '{kind}' is not registered. Available: {list(plotter_map.keys())}")
+        return plotter.render(self, **kwargs)
+
     @classmethod
     def from_pairwise(cls, query_col: pd.Series, target_col: pd.Series, weight_col: pd.Series,
                       metric_type: MetricType = MetricType.ABSOLUTE_DISTANCE) -> Self:

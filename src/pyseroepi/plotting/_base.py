@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import Any, Callable, Union
 from abc import ABC, abstractmethod
 from json import load as json_load
 from warnings import warn
@@ -94,22 +94,23 @@ class BasePlotter(ABC):
     _PLOT_REGISTRY = {}
 
     @classmethod
-    def register_plotter(cls, result_class: type, plot_type: PlotType) -> Callable:
+    def register_plotter(cls, result_class: Union[type, tuple], plot_type: PlotType) -> Callable:
         """
         Decorator to register a plotter class for a specific result type.
 
         Args:
-            result_class: The result class (e.g., PrevalenceEstimates) to register for.
+            result_class: The result class (or tuple of classes) to register for.
             plot_type: The name/kind of the plot (e.g., 'bar').
 
         Returns:
             A decorator function.
         """
         def decorator(plotter_cls):
-            if result_class not in cls._PLOT_REGISTRY:
-                cls._PLOT_REGISTRY[result_class] = {}
-
-            cls._PLOT_REGISTRY[result_class][plot_type] = plotter_cls
+            classes = result_class if isinstance(result_class, tuple) else (result_class,)
+            for rc in classes:
+                if rc not in cls._PLOT_REGISTRY:
+                    cls._PLOT_REGISTRY[rc] = {}
+                cls._PLOT_REGISTRY[rc][plot_type] = plotter_cls
             return plotter_cls
 
         return decorator

@@ -2,35 +2,24 @@
 
 This section provides the complete API documentation for `pyseroepi`, parsed directly from the docstrings.
 
-## Main Classes
+## Main library
 
-::: pyseroepi.GeneFinder
+::: pyseroepi.accessors
 
-::: pyseroepi.Model
+::: pyseroepi.formulation
 
-## Result Classes
+::: pyseroepi.estimators
 
-::: pyseroepi.Gene
+::: pyseroepi.plotting
 
-::: pyseroepi.Mutation
+## IO
 
-## I/O
+::: pyseroepi.io
 
-### File Readers
+::: pyseroepi.dist
 
-::: pyseroepi.FastaReader
+## Misc
 
-::: pyseroepi.FastqReader
+::: pyseroepi.constants
 
-
-### File Writers
-
-::: pyseroepi.BedWriter
-
-::: pyseroepi.VcfWriter
-
-::: pyseroepi.Gff3Writer
-
-::: pyseroepi.FnaWriter
-
-::: pyseroepi.FaaWriter
+::: pyseroepi.client

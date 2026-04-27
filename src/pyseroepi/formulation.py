@@ -3,8 +3,9 @@ Module for abstracting a vaccine formulation using trait prevalence and stabilit
 """
 from dataclasses import dataclass
 import pandas as pd
-import copy
 from abc import ABC
+from typing import Optional
+from joblib import Parallel, delayed
 from pyseroepi.estimators._base import BaseEstimator
 
 
@@ -12,15 +13,15 @@ from pyseroepi.estimators._base import BaseEstimator
 @dataclass(frozen=True, slots=True)
 class Formulation:
     """
-    Represents a proposed vaccine formulation based on antigen prevalence and stability.
+    Represents a proposed vaccine formulation based on target prevalence and stability.
 
     This class holds the results of a formulation design process, including rankings,
     stability metrics from cross-validation, and permutation history.
 
     Attributes:
-        target: The target antigen type (e.g., 'K_locus').
-        max_valency: The maximum number of antigens in the formulation.
-        rankings: A DataFrame containing the definitive ranking of antigens
+        target: The target target type (e.g., 'K_locus').
+        max_valency: The maximum number of targets in the formulation.
+        rankings: A DataFrame containing the definitive ranking of targets
             (Antigen, Rank, Prevalence, Cumulative Coverage).
         stability_metrics: A DataFrame containing metrics from LOO stability analysis
             (e.g., Mean LOO Rank, Rank Variance, Probability in Top N).
@@ -30,7 +31,7 @@ class Formulation:
     Examples:
         >>> import pandas as pd
         >>> from pyseroepi.formulation import Formulation
-        >>> rankings = pd.DataFrame({'antigen': ['K1', 'K2'], 'estimate': [0.5, 0.3]})
+        >>> rankings = pd.DataFrame({'target': ['K1', 'K2'], 'estimate': [0.5, 0.3]})
         >>> formulation = Formulation(
         ...     target='K_locus',
         ...     max_valency=2,
@@ -58,7 +59,7 @@ class Formulation:
             baseline_result: 'PrevalenceEstimates'
     ) -> 'Formulation':
         """
-        Creates a custom Formulation from a user-defined list of antigens.
+        Creates a custom Formulation from a user-defined list of targets.
         Calculates the baseline coverage for these specific targets.
         """
         target_col = baseline_result.target
@@ -66,13 +67,13 @@ class Formulation:
 
         # 1. Calculate the true baseline prevalence for everything
         baseline = raw_df.groupby(target_col)['estimate'].sum().sort_values(ascending=False).reset_index()
-        baseline.rename(columns={target_col: 'antigen'}, inplace=True)
+        baseline.rename(columns={target_col: 'target'}, inplace=True)
 
         # 2. Filter and reorder the baseline to match the user's custom list exactly
         # We use pd.Categorical to ensure the dataframe retains the exact order the user requested
-        baseline['antigen_cat'] = pd.Categorical(baseline['antigen'], categories=custom_targets, ordered=True)
-        custom_rankings = baseline.dropna(subset=['antigen_cat']).sort_values('antigen_cat').drop(
-            columns=['antigen_cat'])
+        baseline['target_cat'] = pd.Categorical(baseline['target'], categories=custom_targets, ordered=True)
+        custom_rankings = baseline.dropna(subset=['target_cat']).sort_values('target_cat').drop(
+            columns=['target_cat'])
 
         # The new rank is simply the order they requested them in
         custom_rankings['baseline_rank'] = range(1, len(custom_targets) + 1)
@@ -121,12 +122,12 @@ class Formulation:
 
     def get_formulation(self) -> list[str]:
         """
-        Returns the top N antigens for the proposed vaccine.
+        Returns the top N targets for the proposed vaccine.
 
         Returns:
-            A list of antigen names.
+            A list of target names.
         """
-        return self.rankings.head(self.max_valency)['antigen'].tolist()
+        return self.rankings.head(self.max_valency)['target'].tolist()
 
 
 class BaseFormulationDesigner(ABC):
@@ -137,17 +138,26 @@ class BaseFormulationDesigner(ABC):
     a vaccine formulation with stability metrics.
 
     Attributes:
-        valency: The target valency (number of antigens) for the vaccine.
+        valency: The target valency (number of targets) for the vaccine.
+        n_jobs: The number of CPU cores to use for processing (-1 for all).
+        formulation_: The resulting Formulation object after fitting.
     """
 
-    def __init__(self, valency: int = 6):
+    def __init__(self, valency: int = 6, n_jobs: int = -1):
         """
         Initializes the designer.
 
         Args:
             valency: The target valency. Defaults to 6.
+            n_jobs: Number of concurrent workers. Defaults to -1 (all available).
         """
         self.valency = valency
+        self.n_jobs = n_jobs
+        self.formulation_: Optional[Formulation] = None
+
+    def fit(self, *args, **kwargs) -> 'BaseFormulationDesigner':
+        """Calculates the formulation and stores it in self.formulation_"""
+        pass
 
 
 class PostHocFormulationDesigner(BaseFormulationDesigner):
@@ -158,7 +168,7 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
     required for Leave-One-Out (LOO) analysis.
     """
 
-    def evaluate(self, result: 'PrevalenceEstimates', loo_col: str) -> 'Formulation':
+    def fit(self, result: 'PrevalenceEstimates', loo_col: str) -> 'PostHocFormulationDesigner':
         """
         Evaluates prevalence results to design a formulation.
 
@@ -167,7 +177,7 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
             loo_col: The column name to use for Leave-One-Out cross-validation.
 
         Returns:
-            A Formulation object.
+            The fitted designer instance.
         """
         raw_df = result.data
         target = result.target
@@ -175,19 +185,30 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
         # 1. Baseline
         baseline = _extract_ranks(raw_df, target, 'baseline_rank')
 
-        # 2. Permutations
+        # 2. Permutations (Vectorized O(N) Subtraction)
+        # Pre-calculate global sums and the individual group sums
+        total_estimates = raw_df.groupby(target)['estimate'].sum()
+        group_target_estimates = raw_df.groupby([loo_col, target])['estimate'].sum().unstack(fill_value=0)
+
         loo_records = []
         for group in raw_df[loo_col].unique():
-            holdout_df = raw_df[raw_df[loo_col] != group]
+            # Subtract the holdout group's contribution from the global total
+            if group in group_target_estimates.index:
+                loo_estimates = total_estimates - group_target_estimates.loc[group]
+            else:
+                loo_estimates = total_estimates.copy()
 
-            ranks = _extract_ranks(holdout_df, target, 'loo_rank')
-            ranks['holdout_group'] = group
-            loo_records.append(ranks)
+            loo_ranks = loo_estimates.sort_values(ascending=False).reset_index()
+            loo_ranks.columns = ['target', 'estimate']
+            loo_ranks['loo_rank'] = loo_ranks.index + 1
+            loo_ranks['holdout_group'] = group
+            loo_records.append(loo_ranks)
 
         history = pd.concat(loo_records, ignore_index=True)
 
         # 3. Compile
-        return _compile_stability_metrics(baseline, history, target, self.valency)
+        self.formulation_ = _compile_stability_metrics(baseline, history, target, self.valency)
+        return self
 
 
 class CVFormulationDesigner(BaseFormulationDesigner):
@@ -197,7 +218,7 @@ class CVFormulationDesigner(BaseFormulationDesigner):
     This method retrains the model for each LOO permutation, which is more
     computationally expensive but necessary for complex models.
     """
-    def evaluate(self, estimator: BaseEstimator, agg_df: pd.DataFrame, loo_col: str) -> 'Formulation':
+    def fit(self, estimator: BaseEstimator, agg_df: pd.DataFrame, loo_col: str) -> 'CVFormulationDesigner':
         """
         Evaluates an estimator using LOO cross-validation to design a formulation.
 
@@ -207,39 +228,45 @@ class CVFormulationDesigner(BaseFormulationDesigner):
             loo_col: The column name to use for Leave-One-Out cross-validation.
 
         Returns:
-            A Formulation object.
+            The fitted designer instance.
         """
         # 1. Baseline
-        baseline_result = copy.deepcopy(estimator).calculate(agg_df)
+        baseline_result = _clone_estimator(estimator).calculate(agg_df)
         target = baseline_result.target
         baseline = _extract_ranks(baseline_result.data, target, 'baseline_rank')
 
-        # 2. Permutations
-        loo_records = []
-        for group in agg_df[loo_col].unique():
-            holdout_df = agg_df[agg_df[loo_col] != group]
-
-            # Retrain from scratch
-            loo_result = copy.deepcopy(estimator).calculate(holdout_df)
-
-            ranks = _extract_ranks(loo_result.data, target, 'loo_rank')
-            ranks['holdout_group'] = group
-            loo_records.append(ranks)
+        # 2. Permutations (Parallel Processing)
+        groups = agg_df[loo_col].unique()
+        
+        loo_records = Parallel(n_jobs=self.n_jobs)(
+            delayed(_run_cv_fold)(estimator, agg_df, loo_col, group, target) 
+            for group in groups
+        )
 
         history = pd.concat(loo_records, ignore_index=True)
 
         # 3. Compile
-        return _compile_stability_metrics(baseline, history, target, self.valency)
+        self.formulation_ = _compile_stability_metrics(baseline, history, target, self.valency)
+        return self
 
 
 # Functions ------------------------------------------------------------------------------------------------------------
 def _extract_ranks(df: pd.DataFrame, target: str, rank_col_name: str) -> pd.DataFrame:
-    """Consistently groups, sums, sorts, and ranks antigens."""
+    """Consistently groups, sums, sorts, and ranks targets."""
     ranks = df.groupby(target)['estimate'].sum().sort_values(ascending=False).reset_index()
     ranks[rank_col_name] = ranks.index + 1
-    ranks.rename(columns={target: 'antigen'}, inplace=True)
+    ranks.rename(columns={target: 'target'}, inplace=True)
     return ranks
 
+
+def _run_cv_fold(estimator: BaseEstimator, agg_df: pd.DataFrame, loo_col: str, group: str, target: str) -> pd.DataFrame:
+    """Helper function to execute a single CV fold in parallel."""
+    holdout_df = agg_df[agg_df[loo_col] != group]
+    # Retrain from scratch on the subset
+    loo_result = _clone_estimator(estimator).calculate(holdout_df)
+    ranks = _extract_ranks(loo_result.data, target, 'loo_rank')
+    ranks['holdout_group'] = group
+    return ranks
 
 def _compile_stability_metrics(
         baseline: pd.DataFrame,
@@ -249,10 +276,10 @@ def _compile_stability_metrics(
 ) -> 'Formulation':
     """Compiles the final variance and probability matrix for the formulation."""
     stability = []
-    for antigen in baseline['antigen']:
-        v_hist = history[history['antigen'] == antigen]
+    for target in baseline['target']:
+        v_hist = history[history['target'] == target]
         stability.append({
-            'antigen': antigen,
+            'target': target,
             'mean_loo_rank': v_hist['loo_rank'].mean(),
             'rank_variance': v_hist['loo_rank'].var(),
             'probability_in_top_n': (v_hist['loo_rank'] <= valency).mean()
@@ -262,6 +289,18 @@ def _compile_stability_metrics(
         target=target,
         max_valency=valency,
         rankings=baseline,
-        stability_metrics=pd.DataFrame(stability).set_index('antigen'),
+        stability_metrics=pd.DataFrame(stability).set_index('target'),
         permutation_history=history
     )
+
+
+def _clone_estimator(estimator: BaseEstimator) -> BaseEstimator:
+    """
+    Safely creates a fresh, unfitted instance of the estimator.
+    Avoids deepcopy pickling errors caused by compiled JAX/NumPyro models.
+    """
+    if hasattr(estimator, 'get_params'):
+        # Scikit-learn API compatibility (safely transfers hyperparameters)
+        return type(estimator)(**estimator.get_params())
+    # Default PySeroEpi fallback
+    return type(estimator)()

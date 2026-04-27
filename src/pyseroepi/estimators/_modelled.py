@@ -4,6 +4,9 @@ from pathlib import Path
 from joblib import dump as joblib_dump, load as joblib_load
 from warnings import warn
 from multiprocessing import cpu_count
+import functools
+import io
+import contextlib
 import pandas as pd
 import numpy as np
 from scipy.special import expit
@@ -15,6 +18,7 @@ from jax import random, vmap, jit
 from numpyro import optim, distributions as dist, diagnostics as diag, sample as samp, set_host_device_count
 from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
 from pyseroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
+from pyseroepi.constants import InferenceMethod
 
 
 # Set-up ---------------------------------------------------------------------------------------------------------------
@@ -109,8 +113,60 @@ class ModelledMixin(ABC):
         return estimator
 
 
+class BayesianMixin:
+    """
+    Shared inference logic for NumPyro-based Bayesian estimators.
+    """
+    def _init_bayesian(self, method: InferenceMethod, num_samples: int, num_chains: int, 
+                       num_warmup: int, svi_steps: int, seed: int):
+        self.method = InferenceMethod(method) if isinstance(method, str) else method
+        self.num_samples = num_samples
+        self.num_chains = num_chains
+        self.num_warmup = num_warmup
+        self.svi_steps = svi_steps
+        self.seed = seed
+        self.samples_ = None
+
+    def _run_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Routes to the correct inference engine based on self.method."""
+        if self.method == InferenceMethod.MCMC:
+            return self._mcmc_inference(jax_data, rng_key)
+        elif self.method == InferenceMethod.SVI:
+            return self._svi_inference(jax_data, rng_key)
+        else:
+            raise ValueError(f"Unknown method: {self.method}. Choose from MCMC or SVI.")
+
+    def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Runs MCMC inference using NUTS."""
+        mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
+                    num_chains=self.num_chains, progress_bar=False)
+        mcmc.run(rng_key, **jax_data)
+        return mcmc.get_samples()
+
+    def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
+        """Runs Stochastic Variational Inference."""
+        opt_key, pred_key = random.split(rng_key)
+        guide = autoguide.AutoNormal(self._model)
+        optimizer = optim.Adam(step_size=0.01)
+        svi = SVI(self._model, guide, optimizer, loss=Trace_ELBO())
+        svi_result = svi.run(opt_key, num_steps=self.svi_steps, **jax_data)
+        predictive = Predictive(self._model, guide=guide, params=svi_result.params, num_samples=self.num_samples)
+        return predictive(pred_key, **jax_data)
+
+    def diagnostics(self) -> str:
+        """Returns MCMC diagnostics (R-hat, ESS) as a formatted string."""
+        if hasattr(self, 'check_is_fitted'):
+            self.check_is_fitted()
+        if self.method != InferenceMethod.MCMC:
+            return "Diagnostics are only available for MCMC inference."
+
+        with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+            diag.print_summary(self.samples_, prob=0.95, group_by_chain=False)
+            return buf.getvalue()
+
+
 # Estimators -----------------------------------------------------------------------------------------------------------
-class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
+class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin, BayesianMixin):
     """
     Bayesian hierarchical model for prevalence estimation.
 
@@ -123,8 +179,8 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         >>> estimator = BayesianPrevalenceEstimator(method='mcmc')
         >>> # result = estimator.calculate(agg_df)
     """
-    def __init__(self, method: Literal['mcmc', 'svi'] = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
-                 num_warmup: int = 1000, svi_steps: int = 3000, target_event='event', target_n='n', seed: int = 42):
+    def __init__(self, method: InferenceMethod = InferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
+                 num_warmup: int = 1000, svi_steps: int = 3000, target_event: str = 'event', target_n: str = 'n', seed: int = 42):
         """
         Initializes the BayesianPrevalenceEstimator.
 
@@ -138,23 +194,13 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
             target_n: Column name for total counts (denominators). Defaults to 'n'.
             seed: Random seed for reproducibility. Defaults to 42.
         """
-        self.method = method
-        self._method_label = f'bayesian_{self.method}'
-        self._method_func = self._METHODS.get(self.method, None)
-        if self._method_func is None:
-            raise ValueError(f"Unknown method: {self.method}. "
-                             f"Choose from: {list(self._METHODS.keys())}")
-
-        self.num_samples = num_samples
-        self.num_warmup = num_warmup
-        self.svi_steps = svi_steps
-        self.num_chains = num_chains
+        self._init_bayesian(method, num_samples, num_chains, num_warmup, svi_steps, seed)
+        self._method_label = f'bayesian_{self.method.value}'
+        
         self.target_event = target_event
         self.target_n = target_n
-        self.seed = seed
 
         # Fitted attributes (trailing underscores)
-        self.samples_ = None
         self.encoders_ = {}
         self.strata_ = []
         self.meta_ = {}
@@ -178,23 +224,6 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         # 5. Likelihood
         samp("obs", dist.Binomial(total_count=n, logits=logit_p), obs=event)
 
-    def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
-        """Runs MCMC inference using NUTS."""
-        mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
-                    num_chains=self.num_chains, progress_bar=False)
-        mcmc.run(rng_key, **jax_data)
-        return mcmc.get_samples()
-
-    def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
-        """Runs Stochastic Variational Inference."""
-        opt_key, pred_key = random.split(rng_key)
-        guide = autoguide.AutoNormal(self._model)
-        optimizer = optim.Adam(step_size=0.01)
-        svi = SVI(self._model, guide, optimizer, loss=Trace_ELBO())
-        svi_result = svi.run(opt_key, num_steps=self.svi_steps, **jax_data)
-        predictive = Predictive(self._model, guide=guide, params=svi_result.params, num_samples=self.num_samples)
-        return predictive(pred_key, **jax_data)
-
     def fit(self, agg_df: pd.DataFrame) -> 'BayesianPrevalenceEstimator':
         """
         Parses data, fits encoders, and runs inference to get posterior samples.
@@ -206,6 +235,12 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
             The fitted estimator instance.
         """
         self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n])
+
+        # FIX: Gracefully handle 1-dimensional stratification by injecting a dummy hierarchy
+        if len(self.strata_) == 1:
+            agg_df = agg_df.copy()
+            agg_df['_dummy_target'] = 'All Targets'
+            self.strata_.append('_dummy_target')
 
         if len(self.strata_) < 2:
             raise ValueError(f"Requires at least two strata levels. Found: {self.strata_}")
@@ -229,9 +264,9 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
             "n_groups": len(self.encoders_[group_col].classes_)
         }
 
-        # Run inference using getattr trick
+        # Run inference
         rng_key = random.PRNGKey(self.seed)
-        self.samples_ = self._method_func(self, jax_data, rng_key)
+        self.samples_ = self._run_inference(jax_data, rng_key)
 
         self.is_fitted_ = True
         return self
@@ -248,13 +283,16 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         """
         self.check_is_fitted()
 
+        # If a dummy target was added during fit, we need to inject it here too
+        predict_df = agg_df.copy()
+        if '_dummy_target' in self.strata_ and '_dummy_target' not in predict_df.columns:
+            predict_df['_dummy_target'] = 'All Targets'
+
         group_col = self.strata_[0]
         target_col = self.strata_[1]
 
-        # Use the PRE-FITTED encoders to safely transform new or existing data
-        # (If the user passes unseen data, .transform() will naturally throw a warning)
-        target_idx = jnp.array(self.encoders_[target_col].transform(agg_df[target_col].astype(str)))
-        group_idx = jnp.array(self.encoders_[group_col].transform(agg_df[group_col].astype(str)))
+        target_idx = jnp.array(self.encoders_[target_col].transform(predict_df[target_col].astype(str)))
+        group_idx = jnp.array(self.encoders_[group_col].transform(predict_df[group_col].astype(str)))
 
         # Matrix math against self.samples_ ...
         alpha_draws = self.samples_["alpha"][:, None]
@@ -277,7 +315,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
 
         return PrevalenceEstimates(
             data=result_df,
-            stratified_by=self.strata_,
+            stratified_by=[s for s in self.strata_ if s != '_dummy_target'],
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
             aggregation_type=self.meta_.get("type", "unknown"),
@@ -287,19 +325,6 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
         """One-liner to fit and predict on the same data."""
         return self.fit(agg_df).predict(agg_df)
-
-    def diagnostics(self):
-        """Prints MCMC diagnostics (R-hat, ESS) to the console."""
-        self.check_is_fitted()
-        if self.method != 'mcmc':
-            print("Diagnostics are only available for MCMC inference.")
-            return
-
-        # NumPyro's built-in summary prints R-hat and ESS directly to the console
-        diag.print_summary(self.samples_, prob=0.95, group_by_chain=False)
-
-    # Populate method registry
-    _METHODS = {'mcmc': _mcmc_inference, 'svi': _svi_inference}
 
 
 class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
@@ -384,7 +409,7 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
         return self.fit(agg_df).predict(agg_df)
 
 
-class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
+class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin, BayesianMixin):
     """
     Gaussian Process (GP) based spatial prevalence estimator.
 
@@ -397,9 +422,9 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         >>> # result = estimator.calculate(agg_df)
     """
     def __init__(self, lat_col: str = 'lat', lon_col: str = 'lon',
-                 method: Literal['mcmc', 'svi'] = 'mcmc', num_samples: int = 1500, num_chains: int = 4,
+                 method: InferenceMethod = InferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000,
-                 target_event='event', target_n='n', seed: int = 42):
+                 target_event: str = 'event', target_n: str = 'n', seed: int = 42):
         """
         Initializes the SpatialPrevalenceEstimator.
 
@@ -415,21 +440,15 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             target_n: Column for totals. Defaults to 'n'.
             seed: Random seed. Defaults to 42.
         """
+        self._init_bayesian(method, num_samples, num_chains, num_warmup, svi_steps, seed)
         self.lat_col = lat_col
         self.lon_col = lon_col
-        self.method = method
-        self._method_label = f'spatial_gp_{self.method}'
-
-        self.num_samples = num_samples
-        self.num_warmup = num_warmup
-        self.svi_steps = svi_steps
-        self.num_chains = num_chains
+        self._method_label = f'spatial_gp_{self.method.value}'
+        
         self.target_event = target_event
         self.target_n = target_n
-        self.seed = seed
 
         # Fitted attributes
-        self.samples_ = None
         self.X_train_ = None
         self.loc_mean_ = None
         self.loc_scale_ = None
@@ -456,6 +475,12 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
 
     def fit(self, agg_df: pd.DataFrame) -> 'SpatialPrevalenceEstimator':
         """Aggregates to unique locations, normalizes, and fits the GP."""
+        if self.lat_col not in agg_df.columns or self.lon_col not in agg_df.columns:
+            raise KeyError(
+                f"Spatial estimator requires '{self.lat_col}' and '{self.lon_col}' "
+                "in the aggregated data. Please ensure you included them in the 'Stratify By' dropdown."
+            )
+
         # 1. Ensure we only have ONE row per unique lat/lon to prevent singular matrices
         spatial_df = agg_df.groupby([self.lat_col, self.lon_col], as_index=False).agg({
             self.target_event: 'sum',
@@ -475,10 +500,9 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             "event": jnp.array(spatial_df[self.target_event].values)
         }
 
-        # 3. Run Inference (Dynamic routing via getattr)
+        # 3. Run Inference
         rng_key = random.PRNGKey(self.seed)
-        inference_func = getattr(self, f"_{self.method}_inference")
-        self.samples_ = inference_func(jax_data, rng_key)
+        self.samples_ = self._run_inference(jax_data, rng_key)
 
         self.meta_ = agg_df.attrs.get("metric_meta", {})
         self.is_fitted_ = True
@@ -501,28 +525,14 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         X_test = jnp.array((raw_X_test - self.loc_mean_) / self.loc_scale_)
         X_train = jnp.array(self.X_train_)
 
-        # 2. Define the exact GP conditional prediction for a single MCMC sample
-        def predict_single_sample(var, length, alpha, f):
-            # K_XX: Covariance of training data
-            K_XX = _rbf_kernel(X_train, X_train, var, length, jitter=1e-5)
-            # K_Xstar_X: Covariance between test data and training data
-            K_Xstar_X = _rbf_kernel(X_test, X_train, var, length, jitter=0.0)
-
-            # Mathematical exact conditional mean: f_* = K_{*X} * (K_{XX})^-1 * f
-            # Solved efficiently without full matrix inversion
-            v = jsp.linalg.solve(K_XX, f, assume_a='pos')
-            f_star = K_Xstar_X @ v
-
-            return alpha + f_star
-
-        # 3. Use JAX vmap to instantly vectorize this complex math across all 1500 samples!
-        vectorized_predict = jit(vmap(predict_single_sample))
-
-        logit_p_draws = vectorized_predict(
+        # 2. Use JAX vmap to instantly vectorize this complex math across all 1500 samples!
+        logit_p_draws = _vectorized_gp_predict(
             self.samples_['var'],
             self.samples_['length'],
             self.samples_['alpha'],
-            self.samples_['f']
+            self.samples_['f'],
+            X_train,
+            X_test
         )
 
         p_draws = expit(logit_p_draws)
@@ -545,24 +555,6 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             aggregation_type=self.meta_.get("type", "unknown"),
             target=self.meta_.get("target", "unknown")
         )
-
-    # --- Standard Inference Wrappers (Inherited/Shared Logic) ---
-    def _mcmc_inference(self, jax_data: dict, rng_key: random.PRNGKey):
-        """Internal MCMC wrapper."""
-        mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
-                    num_chains=self.num_chains)
-        mcmc.run(rng_key, **jax_data)
-        return mcmc.get_samples()
-
-    def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
-        """Internal SVI wrapper."""
-        opt_key, pred_key = random.split(rng_key)
-        guide = autoguide.AutoNormal(self._model)
-        optimizer = optim.Adam(step_size=0.01)
-        svi = SVI(self._model, guide, optimizer, loss=Trace_ELBO())
-        svi_result = svi.run(opt_key, num_steps=self.svi_steps, **jax_data)
-        predictive = Predictive(self._model, guide=guide, params=svi_result.params, num_samples=self.num_samples)
-        return predictive(pred_key, **jax_data)
 
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
         """One-liner to fit and predict."""
@@ -710,3 +702,14 @@ def _rbf_kernel(X, Z, var, length, jitter=1e-5):
     if X.shape == Z.shape:
         K += jitter * jnp.eye(X.shape[0])
     return K
+
+
+@functools.partial(jit)
+@functools.partial(vmap, in_axes=(0, 0, 0, 0, None, None))
+def _vectorized_gp_predict(var, length, alpha, f, X_train, X_test):
+    """Pure function for exact GP conditional predictions. JIT compiled once."""
+    K_XX = _rbf_kernel(X_train, X_train, var, length, jitter=1e-5)
+    K_Xstar_X = _rbf_kernel(X_test, X_train, var, length, jitter=0.0)
+    v = jsp.linalg.solve(K_XX, f, assume_a='pos')
+    f_star = K_Xstar_X @ v
+    return alpha + f_star
