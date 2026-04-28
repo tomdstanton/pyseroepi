@@ -5,7 +5,7 @@ from shiny import ui, module
 import shinyswatch
 from shinywidgets import output_widget
 
-from pyseroepi.constants import HoldoutStrategy, EstimatorType, PlotType, AggregationType
+from pyseroepi.constants import EstimatorType, PlotType, AggregationType
 
 
 # =====================================================================================
@@ -35,7 +35,7 @@ def dt_download_ui(title: str):
 # =====================================================================================
 @module.ui
 def _home_ui():
-    readme = Path(__file__).parent / "README.md"
+    readme = Path(__file__).parent.parent.parent.parent / "README.md"
     return ui.div(
         ui.card(
             ui.markdown(readme.read_text()),
@@ -361,13 +361,39 @@ main_ui = ui.page_navbar(
     ui.nav_panel("Target Logistics 🌍", _logistics_ui("tab_logistics")),
 
     ui.nav_spacer(),  # Pushes everything after this to the right side of the navbar
-    ui.nav_control(ui.input_dark_mode(id="dark_mode", mode="dark")),
+    ui.nav_control(
+        ui.tags.button(
+            "Ask AI 🤖", 
+            class_="btn btn-sm btn-outline-info mt-1", 
+            type="button", 
+            **{"data-bs-toggle": "offcanvas", "data-bs-target": "#chat_offcanvas"}
+        )
+    ),
+    ui.nav_control(ui.input_dark_mode(id="dark_mode")),
 
     theme=shinyswatch.theme.pulse(),
     title="pyseroepi",
     id="main_nav",
     window_title="pyseroepi",
-    footer=app_footer,
+    footer=ui.TagList(
+        app_footer,
+        ui.div(
+            ui.div(
+                ui.h5("SeroEpi Assistant 🤖", class_="offcanvas-title"),
+                ui.tags.button(type="button", class_="btn-close text-reset", **{"data-bs-dismiss": "offcanvas"}),
+                class_="offcanvas-header"
+            ),
+            ui.div(
+                ui.chat_ui("ai_assistant"),
+                class_="offcanvas-body pb-3"
+            ),
+            class_="offcanvas offcanvas-end",
+            tabindex="-1",
+            id="chat_offcanvas",
+            style="width: 500px;",
+            **{"data-bs-scroll": "true", "data-bs-backdrop": "false"}  # Allows interacting with dashboard while open!
+        )
+    ),
     header=ui.tags.head(
         # 1. This unlocks the drag-and-drop Selectize plugin
         ui.tags.script(src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"),

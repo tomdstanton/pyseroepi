@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 from sklearn.manifold import MDS
 import pandera.errors
 from joblib import dump as joblib_dump, load as joblib_load
+from openai import AsyncOpenAI
 
 from pyseroepi.app.ui import dt_download_ui
 from pyseroepi.formulation import CVFormulationDesigner, PostHocFormulationDesigner, Formulation
@@ -627,7 +628,7 @@ def _burden_server(input, output, session, app_state: dict):
                 shared_agg_df.set(agg_df)
                 p.set(message="Done!", value=100)
                 ui.notification_show("Data aggregated successfully!", type="message")
-                ui.update_accordion("burden_accordion", show="Prevalence Estimation 🤖")
+                ui.update_accordion("burden_accordion", show="Prevalence Estimation 📈")
                 ui.update_navset("main_dashboard_tabs", selected="tab_aggregated_data")
                 
             except Exception as e:
@@ -779,17 +780,22 @@ def _burden_server(input, output, session, app_state: dict):
                 class_="text-center mt-5 text-muted fs-4"
             )
             
-        try:
-            return ui.card(
-                ui.card_header("NumPyro Posterior Diagnostics"),
-                ui.div(
-                    ui.pre(est.diagnostics(), style="background-color: transparent; border: none; color: inherit; margin: 0;"),
-                    class_="p-3 rounded",
-                    style="overflow-x: auto; max-height: 500px; background-color: #1E293B;" # Terminal Slate
-                )
-            )
+        try:            
+            # Execute a dummy call to gracefully catch TypeErrors (like attempting diagnostics on SVI)
+            _ = est.diagnostics()
+            return dt_download_ui("model_diagnostics", "NumPyro Posterior Diagnostics")
         except Exception as e:
             return ui.div(f"Diagnostics Error: {str(e)}", class_="text-danger text-center mt-5 fs-5")
+
+    def get_model_diagnostics():
+        if (est := fitted_estimator.get()) is not None and hasattr(est, 'diagnostics'):
+            try:
+                return est.diagnostics()
+            except Exception:
+                pass
+        return None
+
+    dt_download_server("model_diagnostics", data_callable=get_model_diagnostics, filename="model_diagnostics.csv", height="500px")
 
     safe_plot_server("prev_plot", data_reactive=prev_results, plot_type=input.prev_plot_type)
 
@@ -1065,3 +1071,47 @@ def main_server(input, output, session):
     _burden_server("tab_burden", app_state=app_state)
     _formulation_server("tab_formulation", app_state=app_state)
     _logistics_server("tab_logistics", app_state=app_state)
+
+    # =====================================================================================
+    # AI ASSISTANT (Context-Aware Chatbot)
+    # =====================================================================================
+    chat = ui.Chat(id="ai_assistant")
+
+    @chat.on_user_submit
+    async def handle_chat_message():
+        # 1. Build the dynamic context from the current application state!
+        context_lines = []
+        if (df := app_state["shared_df"].get()) is not None:
+            context_lines.append(f"- Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns.")
+        if (res := app_state["prev_results"].get()) is not None:
+            # Pass a small preview of the results to the LLM so it can answer specific questions
+            context_lines.append(f"- Calculated Prevalence ({res.method}, Target: {res.target}):\n{res.data.head(5).to_string()}")
+        if (vac := app_state["current_vaccine"].get()) is not None:
+            context_lines.append(f"- Optimal Vaccine Formulation: {', '.join(vac.get_formulation())} (Valency {vac.max_valency})")
+
+        sys_prompt = (
+            "You are a world-class bioinformatics and epidemiology AI assistant. "
+            "You are embedded directly within the 'pyseroepi' Shiny dashboard. "
+            "Answer the user's questions based on the current state of their workspace data:\n\n"
+            + "\n".join(context_lines)
+        )
+
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            await chat.append_message("⚠️ `OPENAI_API_KEY` environment variable is missing. Please set it to use the AI assistant.")
+            return
+
+        # 2. Query the LLM and stream the response back to the UI smoothly
+        client = AsyncOpenAI(api_key=api_key)
+        messages = [{"role": "system", "content": sys_prompt}] + list(chat.messages())
+
+        try:
+            # Stream=True creates that satisfying "typing" effect in the UI
+            response = await client.chat.completions.create(
+                model="gpt-4o",  # Standard, highly capable model
+                messages=messages,
+                stream=True
+            )
+            await chat.append_message_stream(response)
+        except Exception as e:
+            await chat.append_message(f"Error communicating with AI: {str(e)}")

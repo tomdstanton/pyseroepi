@@ -23,7 +23,8 @@ app = [
     "pyseroepi[spatial,models,client,plot]",
     "shiny",
     "shinywidgets",
-    "shinyswatch"
+    "shinyswatch",
+    "openai"
 ]
 
 # THESE ARE ONLY FOR YOU (Local development, testing, and docs)

@@ -1,4 +1,0 @@
-# 🦠💉🌍 `pyseroepi`
-
-## About
-Lorem ipsum

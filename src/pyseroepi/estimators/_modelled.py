@@ -153,16 +153,34 @@ class BayesianMixin:
         predictive = Predictive(self._model, guide=guide, params=svi_result.params, num_samples=self.num_samples)
         return predictive(pred_key, **jax_data)
 
-    def diagnostics(self) -> str:
-        """Returns MCMC diagnostics (R-hat, ESS) as a formatted string."""
+    def diagnostics(self) -> pd.DataFrame:
+        """Returns MCMC diagnostics (R-hat, ESS) as a formatted DataFrame."""
         if hasattr(self, 'check_is_fitted'):
             self.check_is_fitted()
         if self.method != InferenceMethod.MCMC:
-            return "Diagnostics are only available for MCMC inference."
-
-        with io.StringIO() as buf, contextlib.redirect_stdout(buf):
-            diag.print_summary(self.samples_, prob=0.95, group_by_chain=False)
-            return buf.getvalue()
+            raise TypeError("Diagnostics are only available for MCMC inference.")
+            
+        summary_dict = diag.summary(self.samples_, prob=0.95, group_by_chain=False)
+        
+        # Flatten multi-dimensional parameters (like fixed/random effects) into individual rows
+        rows = []
+        for param, stats in summary_dict.items():
+            param_shape = np.shape(stats['mean'])
+            
+            if len(param_shape) == 0:
+                row = {'Parameter': param}
+                row.update({k: float(v) for k, v in stats.items()})
+                rows.append(row)
+            else:
+                it = np.nditer(np.empty(param_shape), flags=['multi_index'])
+                for _ in it:
+                    idx = it.multi_index
+                    idx_str = ",".join(map(str, idx))
+                    row = {'Parameter': f"{param}[{idx_str}]"}
+                    row.update({k: float(np.asarray(v)[idx]) for k, v in stats.items()})
+                    rows.append(row)
+                    
+        return pd.DataFrame(rows)
 
 
 # Estimators -----------------------------------------------------------------------------------------------------------
