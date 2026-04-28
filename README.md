@@ -8,6 +8,7 @@ Built seamlessly on top of `pandas`, it is specifically designed to ingest outpu
 
 ## ✨ What You Can Do
 
+- **Robust Data Stewardship**: Validate inputs seamlessly against our `UnifiedIsolateSchema` (powered by Pandera) to ensure completely standardized genotypic, spatial, and temporal datasets.
 - **Interactive Dashboarding**: Launch a beautifully designed, dark-mode Shiny app to explore your data, train models, and generate publication-ready plots instantly.
 - **Smart Pandas Accessors**: Clean coordinates, query AMR genes, and generate epidemic curves natively using `df.geo`, `df.geno`, `df.epi`, and `df.qc`.
 - **Robust Statistical Modeling**: Estimate global and regional prevalence using Frequentist, Bayesian MCMC/SVI, and Gaussian Process (GP) Spatial models.
@@ -39,12 +40,13 @@ uv pip install seroepi[models,plot]
 
 ## 🚀 Running the Interactive Dashboard
 
-`seroepi` comes with a world-class, fully featured Shiny web dashboard. You can upload data, configure models, chat with a built-in AI assistant, and download your results without writing a single line of code.
+`seroepi` comes with a world-class, fully featured Shiny web dashboard. You can upload data, configure models, chat
+with a built-in AI assistant, and download your results without writing a single line of code.
 
 To launch the app locally from your command line:
 
 ```bash
-shiny run -m seroepi.app
+shiny run seroepi.app
 ```
 
 ---
@@ -53,13 +55,22 @@ shiny run -m seroepi.app
 
 If you prefer working in Jupyter Notebooks or Python scripts, `seroepi` extends standard Pandas DataFrames to make bioinformatics workflows effortless.
 
-### 1. Data Ingestion & Spatial Cleaning
+### 1. Data Ingestion, Validation & Spatial Cleaning
 ```python
 import pandas as pd
+from seroepi.io import PathogenwatchKleborateParser
 import seroepi.accessors  # Magically registers .epi, .geo, .geno, .qc
 
-# Load your Kleborate output
-df = pd.read_csv("kleborate_results.csv")
+# Load your Kleborate output and optional Metadata
+geno_df = pd.read_csv("kleborate_results.csv")
+meta_df = pd.read_csv("metadata.csv")
+
+# Parse, merge, and strictly validate against the UnifiedIsolateSchema
+df = PathogenwatchKleborateParser.parse(
+    geno_df, 
+    meta_df=meta_df, 
+    meta_kwargs={"id_col": "sample_id", "country_col": "country"}
+)
 
 # Automatically impute missing coordinates based on Country names!
 df = df.geo.standardize_and_impute()

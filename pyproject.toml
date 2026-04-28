@@ -4,6 +4,11 @@ name = "seroepi"
 dynamic = ["version"]
 description = "A Python library for bacterial sero-epidemiology"
 requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/tomdstanton/seroepi"
+"Bug Tracker" = "https://github.com/tomdstanton/seroepi/issues"
+
 dependencies = [
     "pandas>=3.0.0",
     "pyarrow",
