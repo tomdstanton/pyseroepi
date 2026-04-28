@@ -9,8 +9,8 @@ import pandas as pd
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from sklearn.neighbors import BallTree
-from pyseroepi.data.gazetteer_data import GAZETTEER_DICT
-from pyseroepi.constants import MetricType
+from seroepi.data.gazetteer_data import GAZETTEER_DICT
+from seroepi.constants import MetricType
 
 
 # Accessors ------------------------------------------------------------------------------------------------------------
@@ -28,7 +28,7 @@ class GeoAccessor:
 
     Examples:
         >>> import pandas as pd
-        >>> import pyseroepi.accessors
+        >>> import seroepi.accessors
         >>> df = pd.DataFrame({'country': ['Australia', 'United Kingdom']})
         >>> df = df.geo.standardize_and_impute()
         >>> print(df[['latitude', 'longitude']])
@@ -94,7 +94,7 @@ class GeoAccessor:
         """
         Performs reverse geocoding to determine country/region from coordinates.
 
-        Requires Geopandas to be installed (`pip install pyseroepi[spatial]`).
+        Requires Geopandas to be installed (`pip install seroepi[spatial]`).
 
         Args:
             shapefile_path: Path to the shapefile containing boundary polygons.
@@ -108,7 +108,7 @@ class GeoAccessor:
         try:
             import geopandas as gpd
         except ImportError:
-            raise ImportError("geopandas is required for reverse geocoding. Install with pyseroepi[spatial]")
+            raise ImportError("geopandas is required for reverse geocoding. Install with seroepi[spatial]")
 
         df = self._obj.copy()
         exact_mask = df['latitude'].notna() & df['longitude'].notna()
@@ -142,7 +142,7 @@ class EpiAccessor:
 
     Examples:
         >>> import pandas as pd
-        >>> import pyseroepi.accessors
+        >>> import seroepi.accessors
         >>> df = pd.DataFrame({
         ...     'date': pd.to_datetime(['2023-01-01', '2023-01-15']),
         ...     'K_locus': ['KL1', 'KL2']
@@ -630,7 +630,7 @@ class GenoAccessor:
 
     Examples:
         >>> import pandas as pd
-        >>> import pyseroepi.accessors
+        >>> import seroepi.accessors
         >>> df = pd.DataFrame({'amr_blaKPC': [True, False], 'vir_ybt': [True, True]})
         >>> amr_matrix = df.geno.amr
     """
@@ -729,7 +729,7 @@ class QCAccessor:
 
     Examples:
         >>> import pandas as pd
-        >>> import pyseroepi.accessors
+        >>> import seroepi.accessors
         >>> df = pd.DataFrame({'qc_N50': [50000, 5000]})
         >>> clean_df = df.qc.filter_assemblies(min_n50=10000)
     """

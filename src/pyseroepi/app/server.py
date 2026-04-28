@@ -18,13 +18,13 @@ import pandera.errors
 from joblib import dump as joblib_dump, load as joblib_load
 from openai import AsyncOpenAI
 
-from pyseroepi.app.ui import dt_download_ui
-from pyseroepi.formulation import CVFormulationDesigner, PostHocFormulationDesigner, Formulation
-from pyseroepi import estimators
-from pyseroepi.io import PathogenwatchKleborateParser
-from pyseroepi.dist import Distances
-from pyseroepi.constants import EstimatorType, AggregationType, PlotType, InferenceMethod
-from pyseroepi.client import PathogenwatchClient
+from seroepi.app.ui import dt_download_ui
+from seroepi.formulation import CVFormulationDesigner, PostHocFormulationDesigner, Formulation
+from seroepi import estimators
+from seroepi.io import PathogenwatchKleborateParser
+from seroepi.dist import Distances
+from seroepi.constants import EstimatorType, AggregationType, PlotType, InferenceMethod
+from seroepi.client import PathogenwatchClient
 
 
 # =====================================================================================
@@ -322,7 +322,7 @@ def _burden_server(input, output, session, app_state: dict):
             except Exception as e:
                 ui.notification_show(f"Load Error: {str(e)}", type="error", duration=15)
 
-    @render.download(filename="pyseroepi_workspace.sero")
+    @render.download(filename="seroepi_workspace.sero")
     async def btn_save_workspace():
         export_state = {k: v.get() for k, v in app_state.items()}
         
@@ -651,7 +651,7 @@ def _burden_server(input, output, session, app_state: dict):
                 estimator_class_name = EstimatorType(est_type).class_name
                 
                 if not hasattr(estimators, estimator_class_name):
-                    ui.notification_show(f"{estimator_class_name} is not available. Did you install pyseroepi[models]?", type="error")
+                    ui.notification_show(f"{estimator_class_name} is not available. Did you install seroepi[models]?", type="error")
                     return
                 
                 EstimatorClass = getattr(estimators, estimator_class_name)
@@ -1091,7 +1091,7 @@ def main_server(input, output, session):
 
         sys_prompt = (
             "You are a world-class bioinformatics and epidemiology AI assistant. "
-            "You are embedded directly within the 'pyseroepi' Shiny dashboard. "
+            "You are embedded directly within the 'seroepi' Shiny dashboard. "
             "Answer the user's questions based on the current state of their workspace data:\n\n"
             + "\n".join(context_lines)
         )

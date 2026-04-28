@@ -5,7 +5,7 @@ from shiny import ui, module
 import shinyswatch
 from shinywidgets import output_widget
 
-from pyseroepi.constants import EstimatorType, PlotType, AggregationType
+from seroepi.constants import EstimatorType, PlotType, AggregationType
 
 
 # =====================================================================================
@@ -323,7 +323,7 @@ def _logistics_ui():
 # =====================================================================================
 # APP FOOTER (Package Metadata)
 # =====================================================================================
-_meta = importlib.metadata.metadata("pyseroepi")
+_meta = importlib.metadata.metadata("seroepi")
 __version__ = _meta.get("Version", "dev")
 
 # Dynamically extract author info mapped from pyproject.toml
@@ -331,7 +331,7 @@ _author_raw = _meta.get("Author-email", "Tom Stanton <tomdstanton@gmail.com>")
 __author_name = _author_raw.split("<")[0].strip() if "<" in _author_raw else _author_raw
 __author_email = _author_raw.split("<")[1].replace(">", "").strip() if "<" in _author_raw else ""
 # Extract GitHub/Repository URL
-__github_url = "https://github.com/tsta0015/pyseroepi"
+__github_url = "https://github.com/tsta0015/seroepi"
 if _meta.get_all("Project-URL"):
     for url_str in _meta.get_all("Project-URL"):
         if any(kw in url_str for kw in ["Repository", "Source", "GitHub"]):
@@ -341,10 +341,10 @@ if _meta.get_all("Project-URL"):
 app_footer = ui.div(
     ui.HTML(f"""
         <div style="text-align: center; font-size: 0.85rem; color: #64748B; border-top: 1px solid #1E293B; padding-top: 15px; padding-bottom: 15px; margin-top: auto;">
-            <strong>pyseroepi</strong> v{__version__} &bull; 
+            <strong>seroepi</strong> v{__version__} &bull; 
             Built by <a href="mailto:{__author_email}" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-envelope-fill"></i> {__author_name}</a> &bull; 
             <a href="{__github_url}" target="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-github"></i> GitHub</a> &bull; 
-            <a href="https://pypi.org/project/pyseroepi/" target="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-box-seam-fill"></i> PyPI</a>
+            <a href="https://pypi.org/project/seroepi/" target="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-box-seam-fill"></i> PyPI</a>
         </div>
     """),
     class_="container-fluid d-flex flex-column justify-content-end"
@@ -372,9 +372,9 @@ main_ui = ui.page_navbar(
     ui.nav_control(ui.input_dark_mode(id="dark_mode")),
 
     theme=shinyswatch.theme.pulse(),
-    title="pyseroepi",
+    title="seroepi",
     id="main_nav",
-    window_title="pyseroepi",
+    window_title="seroepi",
     footer=ui.TagList(
         app_footer,
         ui.div(

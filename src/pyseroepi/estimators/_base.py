@@ -3,7 +3,7 @@ from typing import Tuple, TypeVar, Generic, Optional
 from dataclasses import dataclass
 from warnings import warn
 import pandas as pd
-from pyseroepi.constants import PlotType, AggregationType
+from seroepi.constants import PlotType, AggregationType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -13,7 +13,7 @@ T_Result = TypeVar('T_Result')
 # The BaseEstimator inherits from Generic[T_Result]
 class BaseEstimator(ABC, Generic[T_Result]):
     """
-    The universal contract for all pyseroepi statistical models.
+    The universal contract for all seroepi statistical models.
 
     All prevalence, diversity, and incidence estimators must inherit from this
     class and implement the `calculate` method.
@@ -128,12 +128,12 @@ class Estimates:
             A plotly Figure object.
         """
         try:  # LAZY IMPORT: We only try to import the registry when the user actually calls .plot()
-            from pyseroepi.plotting._base import BasePlotter
+            from seroepi.plotting._base import BasePlotter
         except ImportError as e:
             # The Sophisticated Trap: Catch the specific missing dependency and give a beautiful error
             raise ImportError(
                 "Plotting features require the optional 'plot' dependencies.\n"
-                "Please install them by running: pip install pyseroepi[plot]"
+                "Please install them by running: pip install seroepi[plot]"
             ) from None  # 'from None' hides the ugly raw stack trace from the user
 
         plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})

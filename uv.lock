@@ -1799,7 +1799,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pyseroepi"
+name = "seroepi"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -1845,7 +1845,7 @@ spatial = [
 [package.dev-dependencies]
 dev = [
     { name = "mkdocstrings-python" },
-    { name = "pyseroepi", extra = ["app"] },
+    { name = "seroepi", extra = ["app"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "zensical" },
@@ -1893,7 +1893,7 @@ provides-extras = ["app", "client", "models", "plot", "spatial"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mkdocstrings-python", specifier = ">=2.0.3" },
-    { name = "pyseroepi", extras = ["app"] },
+    { name = "seroepi", extras = ["app"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "zensical", specifier = ">=0.0.29" },

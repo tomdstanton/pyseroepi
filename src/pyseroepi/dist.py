@@ -57,7 +57,7 @@ class Distances:
     Examples:
         >>> import pandas as pd
         >>> import numpy as np
-        >>> from pyseroepi.dist import Distances, MetricType
+        >>> from seroepi.dist import Distances, MetricType
         >>> q = pd.Series(['S1', 'S1'])
         >>> t = pd.Series(['S2', 'S3'])
         >>> w = pd.Series([5, 10])
@@ -90,10 +90,10 @@ class Distances:
             A plotly Figure object.
         """
         try:
-            from pyseroepi.plotting._base import BasePlotter
+            from seroepi.plotting._base import BasePlotter
         except ImportError:
             raise ImportError("Plotting features require the optional 'plot' dependencies.\n"
-                              "Please install them by running: pip install pyseroepi[plot]") from None
+                              "Please install them by running: pip install seroepi[plot]") from None
 
         plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
         if (plotter := plotter_map.get(kind)) is None:
@@ -182,7 +182,7 @@ class Distances:
         try:
             from Bio import Phylo
         except ImportError:
-            raise ImportError("biopython is required to calculate patristics. Install with pyseroepi[dev]")
+            raise ImportError("biopython is required to calculate patristics. Install with seroepi[dev]")
 
         # 1. Parse the tree
         tree = Phylo.read(StringIO(newick_string), "newick")

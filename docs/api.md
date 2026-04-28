@@ -1,25 +1,25 @@
 # API Reference
 
-This section provides the complete API documentation for `pyseroepi`, parsed directly from the docstrings.
+This section provides the complete API documentation for `seroepi`, parsed directly from the docstrings.
 
 ## Main library
 
-::: pyseroepi.accessors
+::: seroepi.accessors
 
-::: pyseroepi.formulation
+::: seroepi.formulation
 
-::: pyseroepi.estimators
+::: seroepi.estimators
 
-::: pyseroepi.plotting
+::: seroepi.plotting
 
 ## IO
 
-::: pyseroepi.io
+::: seroepi.io
 
-::: pyseroepi.dist
+::: seroepi.dist
 
 ## Misc
 
-::: pyseroepi.constants
+::: seroepi.constants
 
-::: pyseroepi.client
+::: seroepi.client

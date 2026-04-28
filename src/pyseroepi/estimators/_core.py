@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm, beta, entropy
 from scipy.spatial.distance import pdist, squareform
-from pyseroepi.estimators._base import (BaseEstimator, PrevalenceEstimates, AlphaDiversityEstimates,
+from seroepi.estimators._base import (BaseEstimator, PrevalenceEstimates, AlphaDiversityEstimates,
                                         BetaDiversityEstimates)
 
 

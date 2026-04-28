@@ -1,6 +1,6 @@
 [project]
 authors = [{name = "Tom Stanton", email = "tomdstanton@gmail.com"}]
-name = "pyseroepi"
+name = "seroepi"
 dynamic = ["version"]
 description = "A Python library for bacterial sero-epidemiology"
 requires-python = ">=3.11"
@@ -13,14 +13,14 @@ dependencies = [
     "pandera"
 ]
 
-# THESE ARE FOR END-USERS (Enables: pip install pyseroepi[plot,models])
+# THESE ARE FOR END-USERS (Enables: pip install seroepi[plot,models])
 [project.optional-dependencies]
 spatial = ['geopandas']
 models = ["numpyro", "statsmodels", "joblib"]
 client = ["requests", "urllib3"]
 plot = ["plotly>=6.6.0", "kaleido"]
 app = [
-    "pyseroepi[spatial,models,client,plot]",
+    "seroepi[spatial,models,client,plot]",
     "shiny",
     "shinywidgets",
     "shinyswatch",
@@ -32,7 +32,7 @@ app = [
 test = ["pytest", "pytest-cov"]
 docs = ["zensical>=0.0.29", "mkdocstrings-python>=2.0.3"]
 dev = [
-    "pyseroepi[app]", # Installs all user extras into your dev environment
+    "seroepi[app]", # Installs all user extras into your dev environment
     {include-group = "test"},
     {include-group = "docs"}
 ]
@@ -42,13 +42,13 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pyseroepi"]
+packages = ["src/seroepi"]
 
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "src/pyseroepi/_version.py"
+version-file = "src/seroepi/_version.py"
 
 [tool.mypy]
 files = ["src"]

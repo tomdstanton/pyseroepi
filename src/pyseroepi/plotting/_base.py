@@ -6,13 +6,13 @@ from importlib.resources import files
 
 from plotly.graph_objects import Figure
 
-from pyseroepi.constants import PlotType
+from seroepi.constants import PlotType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
 class BasePlotter(ABC):
     """
-    Stateless base class for all plotting engines in pyseroepi.
+    Stateless base class for all plotting engines in seroepi.
 
     This class houses global configurations, themes, and shared utilities for
     rendering interactive Plotly figures. It uses a dark-slate aesthetic
@@ -44,7 +44,7 @@ class BasePlotter(ABC):
         if cls._WORLD_GEOJSON is None:
             try:
                 # Safely navigates the package structure regardless of where it's installed
-                geojson_path = files('pyseroepi.data').joinpath('world_boundaries.geojson')
+                geojson_path = files('seroepi.data').joinpath('world_boundaries.geojson')
                 with geojson_path.open(mode='r', encoding='utf-8') as f:
                     cls._WORLD_GEOJSON = json_load(f)
             except Exception as e:

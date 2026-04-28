@@ -1,8 +1,8 @@
-site_name = "🦠💉🌍 pyseroepi"
+site_name = "🦠💉🌍 seroepi"
 site_description = "A Python library for bacterial sero-epidemiology"
-site_url = "https://tomdstanton.github.io/pyseroepi/"
-repo_url = "https://github.com/tomdstanton/pyseroepi"
-repo_name = "tomdstanton/pyseroepi"
+site_url = "https://tomdstanton.github.io/seroepi/"
+repo_url = "https://github.com/tomdstanton/seroepi"
+repo_name = "tomdstanton/seroepi"
 site_author = "Tom Stanton"
 
 nav = [

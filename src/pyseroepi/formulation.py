@@ -6,7 +6,7 @@ import pandas as pd
 from abc import ABC
 from typing import Optional
 from joblib import Parallel, delayed
-from pyseroepi.estimators._base import BaseEstimator
+from seroepi.estimators._base import BaseEstimator
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -30,7 +30,7 @@ class Formulation:
 
     Examples:
         >>> import pandas as pd
-        >>> from pyseroepi.formulation import Formulation
+        >>> from seroepi.formulation import Formulation
         >>> rankings = pd.DataFrame({'target': ['K1', 'K2'], 'estimate': [0.5, 0.3]})
         >>> formulation = Formulation(
         ...     target='K_locus',
@@ -105,12 +105,12 @@ class Formulation:
             ValueError: If the requested plot kind is not registered.
         """
         try:  # LAZY IMPORT: We only try to import the registry when the user actually calls .plot()
-            from pyseroepi.plotting._base import BasePlotter
+            from seroepi.plotting._base import BasePlotter
         except ImportError as e:
             # The Sophisticated Trap: Catch the specific missing dependency and give a beautiful error
             raise ImportError(
                 "Plotting features require the optional 'plot' dependencies.\n"
-                "Please install them by running: pip install pyseroepi[plot]"
+                "Please install them by running: pip install seroepi[plot]"
             ) from None  # 'from None' hides the ugly raw stack trace from the user
 
         plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
@@ -302,5 +302,5 @@ def _clone_estimator(estimator: BaseEstimator) -> BaseEstimator:
     if hasattr(estimator, 'get_params'):
         # Scikit-learn API compatibility (safely transfers hyperparameters)
         return type(estimator)(**estimator.get_params())
-    # Default PySeroEpi fallback
+    # Default seroepi fallback
     return type(estimator)()

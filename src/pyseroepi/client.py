@@ -21,7 +21,7 @@ class PathogenwatchClient:
         session (requests.Session): The underlying requests session with retry strategy.
 
     Examples:
-        >>> from pyseroepi.client import PathogenwatchClient
+        >>> from seroepi.client import PathogenwatchClient
         >>> with PathogenwatchClient(api_key="your_api_key") as client:
         ...     collections = list(client.get_collections(limit=5))
         ...     for collection in collections:
@@ -44,7 +44,7 @@ class PathogenwatchClient:
         self.session.headers.update({
             "X-API-Key": api_key,
             "Content-Type": "application/json",
-            "User-Agent": "pyseroepi-client/1.0"
+            "User-Agent": "seroepi-client/1.0"
         })
         
         # This replaces the entire threading/lock/backoff mechanism of the old template.

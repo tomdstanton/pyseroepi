@@ -2,11 +2,11 @@ from typing import Union
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from pyseroepi.plotting._base import BasePlotter
-from pyseroepi.constants import PlotType, AggregationType
-from pyseroepi import estimators
-from pyseroepi.formulation import Formulation
-from pyseroepi.dist import Distances
+from seroepi.plotting._base import BasePlotter
+from seroepi.constants import PlotType, AggregationType
+from seroepi import estimators
+from seroepi.formulation import Formulation
+from seroepi.dist import Distances
 
 
 # Classes --------------------------------------------------------------------------------------------------------------

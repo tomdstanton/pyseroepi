@@ -3,7 +3,7 @@ from pathlib import Path
 try:
     import geopandas as gpd
 except ImportError:
-    raise ImportError("geopandas is required for reverse geocoding. Install with pyseroepi[spatial]")
+    raise ImportError("geopandas is required for reverse geocoding. Install with seroepi[spatial]")
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
     gdf = gpd.read_file(url)
 
     # Setup the output directory
-    out_dir = Path("../src/pyseroepi/data")
+    out_dir = Path("../src/seroepi/data")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # --- ARTIFACT 1: The Raw Python Dictionary (Gazetteer) ---
@@ -55,7 +55,7 @@ def main():
     minimal_gdf = gdf[['ADM0_A3', 'geometry']]
 
     minimal_gdf.to_file(out_dir / 'world_boundaries.geojson', driver='GeoJSON')
-    print("Done! Assets safely bundled in pyseroepi/data/")
+    print("Done! Assets safely bundled in seroepi/data/")
 
 
 if __name__ == "__main__":

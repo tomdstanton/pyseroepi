@@ -6,7 +6,7 @@ export JUST_LOG := log
 set script-interpreter := ['uv', 'run', '--script']
 
 app:
-    uv run shiny run src/pyseroepi/app/ui.py --reload
+    uv run shiny run src/seroepi/app/ui.py --reload
 
 docs:
     cp README.md docs/index.md

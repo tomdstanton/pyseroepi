@@ -1,12 +1,12 @@
-from pyseroepi.constants import PlotType
+from seroepi.constants import PlotType
 
 
 # Functions ------------------------------------------------------------------------------------------------------------
 def test():
     from pathlib import Path
     import pandas as pd
-    from pyseroepi.dist import Distances
-    from pyseroepi.io import PathogenwatchKleborateParser
+    from seroepi.dist import Distances
+    from seroepi.io import PathogenwatchKleborateParser
 
     test_dir = Path('tests')
     dataset = 'pathogenwatch-klepn-klebnet-neonatal-sepsis'
@@ -30,8 +30,8 @@ def test():
     t_clusters = df.epi.transmission_clusters(clusters.name)
     df[t_clusters.name] = t_clusters
 
-    from pyseroepi.estimators import FrequentistPrevalenceEstimator as Estimator
-    from pyseroepi.formulation import PostHocFormulationDesigner as Designer
+    from seroepi.estimators import FrequentistPrevalenceEstimator as Estimator
+    from seroepi.formulation import PostHocFormulationDesigner as Designer
 
     est = Estimator()
     agg = df.epi.aggregate_prevalence(stratify_by=['country', 'K_locus'], cluster_col=t_clusters.name)
@@ -42,8 +42,8 @@ def test():
     formulation.plot('rank_stability_bump')
 
 
-    from pyseroepi.estimators import BayesianPrevalenceEstimator as Estimator
-    from pyseroepi.formulation import CVFormulationDesigner
+    from seroepi.estimators import BayesianPrevalenceEstimator as Estimator
+    from seroepi.formulation import CVFormulationDesigner
     est = Estimator()
     agg = df.epi.aggregate_prevalence(stratify_by=['country', 'K_locus'])
     res = est.calculate(agg)
