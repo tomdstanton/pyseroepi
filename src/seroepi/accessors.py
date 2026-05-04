@@ -10,7 +10,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from sklearn.neighbors import BallTree
 from seroepi.data.gazetteer_data import GAZETTEER_DICT
-from seroepi.constants import MetricType
+from seroepi.constants import MetricType, TimeResolution, GeoResolution
 
 
 # Accessors ------------------------------------------------------------------------------------------------------------
@@ -57,14 +57,14 @@ class GeoAccessor:
 
         # 1. Initialize tracking
         if 'spatial_resolution' not in df.columns:
-            df['spatial_resolution'] = 'unknown'
+            df['spatial_resolution'] = GeoResolution.UNKNOWN.value
 
         # If it's a category, we need to ensure 'exact' and 'country' are in the categories before assigning
         if isinstance(df['spatial_resolution'].dtype, pd.CategoricalDtype):
-            df['spatial_resolution'] = df['spatial_resolution'].cat.add_categories(['exact', 'country'])
+            df['spatial_resolution'] = df['spatial_resolution'].cat.add_categories([GeoResolution.EXACT.value, GeoResolution.COUNTRY.value])
 
         exact_mask = df['latitude'].notna() & df['longitude'].notna()
-        df.loc[exact_mask, 'spatial_resolution'] = 'exact'
+        df.loc[exact_mask, 'spatial_resolution'] = GeoResolution.EXACT.value
 
         # 2. Impute using the instant dictionary-backed dataframe
         if 'country' in df.columns:
@@ -77,7 +77,7 @@ class GeoAccessor:
             df.loc[needs_imputation, 'longitude'] = clean_countries.map(ref_data['centroid_lon'])
 
             imputed_mask = needs_imputation & df['latitude'].notna()
-            df.loc[imputed_mask, 'spatial_resolution'] = 'country'
+            df.loc[imputed_mask, 'spatial_resolution'] = GeoResolution.COUNTRY.value
 
             if 'iso3' not in df.columns or df['iso3'].isna().all():
                 df['iso3'] = clean_countries.map(ref_data['iso3'])
@@ -193,13 +193,13 @@ class EpiAccessor:
 
     # --- Time Series / Epidemic Curve Methods ---
 
-    def epidemic_curve(self, freq: Literal['D', 'W', 'ME', 'YE'] = 'W', stratify_by: str = None) -> pd.DataFrame:
+    def epidemic_curve(self, freq: Union[str, TimeResolution] = TimeResolution.WEEK, stratify_by: str = None) -> pd.DataFrame:
         """
         Generates a time-series DataFrame for plotting epidemic curves.
 
         Args:
-            freq: Time frequency for resampling (e.g., 'D', 'W', 'ME', 'YE').
-                Defaults to 'W'.
+            freq: Time frequency for resampling (e.g., TimeResolution.MONTH, 'ME', 'YE').
+                Defaults to TimeResolution.WEEK.
             stratify_by: Column name to group by before resampling.
 
         Returns:
@@ -212,6 +212,11 @@ class EpiAccessor:
             raise ValueError("Cannot generate epi curve: No temporal data available.")
 
         df = self._obj.copy()
+        
+        if isinstance(freq, TimeResolution):
+            freq_val = freq.pandas_offset
+        else:
+            freq_val = freq
 
         # We know exactly what the column is called now!
         if not pd.api.types.is_datetime64_any_dtype(df['date']):
@@ -221,9 +226,9 @@ class EpiAccessor:
         df = df.set_index('date')
 
         if stratify_by:
-            curve = df.groupby(stratify_by).resample(freq).size().unstack(level=0, fill_value=0)
+            curve = df.groupby(stratify_by).resample(freq_val).size().unstack(level=0, fill_value=0)
         else:
-            curve = df.resample(freq).size().to_frame(name='count')
+            curve = df.resample(freq_val).size().to_frame(name='count')
 
         return curve.reset_index()
 
@@ -261,7 +266,8 @@ class EpiAccessor:
 
 
     def aggregate_prevalence(self, stratify_by: list[str], target_col: str = None,
-                             cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-') -> pd.DataFrame:
+                             cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
+                             pad_zeros: bool = False) -> pd.DataFrame:
         """
         Aggregates data to calculate event counts and denominators for prevalence.
 
@@ -276,6 +282,9 @@ class EpiAccessor:
             cluster_col: Column containing cluster IDs to adjust for (e.g., nosocomial outbreaks).
             negative_indicator: Value(s) representing the absence of a trait.
                 Defaults to '-'.
+            pad_zeros: If True, pads missing combinations of strata with zero counts.
+                Essential for spatial/hierarchical models. If False, only includes
+                observed combinations for efficiency. Defaults to False.
 
         Returns:
             An aggregated DataFrame with 'event' and 'n' columns.
@@ -322,21 +331,31 @@ class EpiAccessor:
                 events = valid_df.groupby(stratify_by).size().rename('event')
 
         # Expand Grid
-        unique_levels = [df[col].dropna().unique() for col in stratify_by]
-        expanded_index = pd.MultiIndex.from_product(unique_levels, names=stratify_by)
-        agg_df = pd.DataFrame(index=expanded_index).join(events, how='left').fillna({'event': 0}).reset_index()
+        if len(stratify_by) > 0:
+            if pad_zeros:
+                # Full Cartesian expansion (padding zeroes)
+                unique_levels = [df[col].dropna().unique() for col in stratify_by]
+                base_index = pd.MultiIndex.from_product(unique_levels, names=stratify_by)
+            else:
+                # Efficiently use only the observed strata combinations
+                base_index = denoms.index if target_col else events.index
 
-        # Safely map denominators (Fixed to handle empty denom_cols for global prevalence)
-        if len(denom_cols) == 0:
-            agg_df['n'] = denoms
-        elif len(denom_cols) == 1:
-            agg_df['n'] = agg_df[denom_cols[0]].map(denoms).fillna(0)
+            agg_df = pd.DataFrame(index=base_index).join(events, how='left').fillna({'event': 0}).reset_index()
+
+            # Safely map denominators
+            if len(denom_cols) == 0:
+                agg_df['n'] = denoms
+            elif len(denom_cols) == 1:
+                agg_df['n'] = agg_df[denom_cols[0]].map(denoms).fillna(0)
+            else:
+                agg_df = agg_df.set_index(denom_cols)
+                agg_df['n'] = denoms
+                agg_df = agg_df.reset_index().fillna({'n': 0})
+                
+            if not pad_zeros:
+                agg_df = agg_df[agg_df['n'] > 0].copy()
         else:
-            agg_df = agg_df.set_index(denom_cols)
-            agg_df['n'] = denoms
-            agg_df = agg_df.reset_index().fillna({'n': 0})
-
-        agg_df = agg_df[agg_df['n'] > 0].copy()
+            agg_df = pd.DataFrame({'event': [events], 'n': [denoms]})
 
         # Re-inject the target column so that plotting methods can reliably find it by name
         if target_col:
@@ -354,7 +373,8 @@ class EpiAccessor:
         return agg_df
 
     def aggregate_diversity(self, stratify_by: list[str], target_col: str = None,
-                            cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-') -> pd.DataFrame:
+                            cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
+                            pad_zeros: bool = False) -> pd.DataFrame:
         """
         Aggregates data to calculate counts for diversity analysis (e.g., Shannon index).
 
@@ -363,6 +383,8 @@ class EpiAccessor:
             target_col: The locus or trait to measure diversity for.
             cluster_col: Optional cluster column to adjust for.
             negative_indicator: Value(s) to exclude from diversity counts.
+            pad_zeros: If True, pads missing combinations of strata with zero counts.
+                Defaults to False.
 
         Returns:
             A DataFrame with 'variant_count' and 'n_total'.
@@ -396,6 +418,11 @@ class EpiAccessor:
         else:
             div_df = valid_df.groupby(target_strata, observed=True).size().reset_index(name='variant_count')
 
+        if pad_zeros and target_strata:
+            unique_levels = [df[col].dropna().unique() for col in target_strata]
+            expanded_index = pd.MultiIndex.from_product(unique_levels, names=target_strata)
+            div_df = div_df.set_index(target_strata).reindex(expanded_index, fill_value=0).reset_index()
+
         if groupers:
             div_df['n_total'] = div_df.groupby(groupers, observed=True)['variant_count'].transform('sum')
         else:
@@ -411,17 +438,20 @@ class EpiAccessor:
 
         return div_df
 
-    def aggregate_incidence(self, stratify_by: list[str], target_col: str = None, freq: str = 'ME',
-                            cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-') -> pd.DataFrame:
+    def aggregate_incidence(self, stratify_by: list[str], target_col: str = None, freq: Union[str, TimeResolution] = TimeResolution.MONTH,
+                            cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
+                            pad_zeros: bool = False) -> pd.DataFrame:
         """
         Aggregates data for time-series incidence analysis.
 
         Args:
             stratify_by: Columns to group by.
             target_col: The marker to measure incidence for.
-            freq: Time frequency for binning (e.g., 'ME', 'YE'). Defaults to 'ME'.
+            freq: Time frequency for binning (e.g., TimeResolution.MONTH, 'ME'). Defaults to TimeResolution.MONTH.
             cluster_col: Optional cluster column to adjust for.
             negative_indicator: Value(s) representing absence.
+            pad_zeros: If True, pads missing combinations of strata. If False,
+                maintains unbroken time grids only for observed strata combinations.
 
         Returns:
             A DataFrame with 'variant_count', 'total_sequenced', and binned dates.
@@ -435,7 +465,12 @@ class EpiAccessor:
             raise ValueError("Incidence aggregation requires a valid datetime64 'date' column.")
 
         # Translate Pandas 2.2+ point offsets ('ME') to period spans ('M')
-        period_freq = freq.replace('ME', 'M').replace('YE', 'Y')
+        if isinstance(freq, TimeResolution):
+            period_freq = freq.pandas_period
+            stored_freq = freq.value
+        else:
+            period_freq = freq.replace('ME', 'M').replace('YE', 'Y')
+            stored_freq = freq
 
         # Snap dates to the requested frequency bin using the safe string
         df['date_bin'] = df['date'].dt.to_period(period_freq).dt.to_timestamp()
@@ -480,8 +515,18 @@ class EpiAccessor:
         all_dates = pd.period_range(min_date, max_date, freq=period_freq).to_timestamp().tolist() if not pd.isna(
             min_date) else []
 
-        unique_levels = [all_dates] + [df[col].dropna().unique() for col in target_strata[1:]]
-        expanded_index = pd.MultiIndex.from_product(unique_levels, names=target_strata)
+        if pad_zeros:
+            unique_levels = [all_dates] + [df[col].dropna().unique() for col in target_strata[1:]]
+            expanded_index = pd.MultiIndex.from_product(unique_levels, names=target_strata)
+        else:
+            if len(target_strata) > 1:
+                # Only use strata combinations that actually appear in the data
+                observed_strata = df[target_strata[1:]].dropna().drop_duplicates()
+                dates_df = pd.DataFrame({target_strata[0]: all_dates})
+                expanded_df = dates_df.merge(observed_strata, how='cross')
+                expanded_index = pd.MultiIndex.from_frame(expanded_df[target_strata])
+            else:
+                expanded_index = pd.Index(all_dates, name=target_strata[0])
 
         inc_df = pd.DataFrame(index=expanded_index).join(events, how='left').fillna({'variant_count': 0}).reset_index()
 
@@ -506,7 +551,7 @@ class EpiAccessor:
             "stratified_by": stratify_by,
             "target": target_col if target_col else stratify_by[-1],
             "type": "trait" if target_col else "compositional",
-            "freq": freq,
+            "freq": stored_freq,
             "adjusted_for": cluster_col
         }
 

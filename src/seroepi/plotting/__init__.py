@@ -2,6 +2,7 @@ from typing import Union
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from sklearn.manifold import MDS
 from seroepi.plotting._base import BasePlotter
 from seroepi.constants import PlotType, AggregationType
 from seroepi import estimators
@@ -69,13 +70,12 @@ class CompositionBarPlotter(BasePlotter):
                 ))
 
         # Apply the global theme and force the stacking mode
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             barmode='stack',
             title=f"<b>{title_prefix}</b><br><sup>Stratified by {strata_label}</sup>",
             yaxis_title="Cumulative Prevalence",
-            yaxis=dict(tickformat='.0%'),  # Renders 0.8 as 80%
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            yaxis=dict(tickformat='.0%')  # Renders 0.8 as 80%
+        ))
 
 
 @BasePlotter.register_plotter(estimators.PrevalenceEstimates,  PlotType.COMPOSITION_HEATMAP)
@@ -139,12 +139,11 @@ class CompositionHeatmapPlotter(BasePlotter):
             hovertemplate=f"<b>%{{y}}</b><br>{x_col}: %{{x}}<br>Prevalence: %{{z:.1%}}<extra></extra>"
         ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>{title_prefix}</b><br><sup>{y_col} vs {x_col}</sup>",
             xaxis_title=x_col.replace('_', ' ').title(),
-            yaxis_title=y_col.replace('_', ' ').title(),
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            yaxis_title=y_col.replace('_', ' ').title()
+        ))
 
 
 
@@ -223,14 +222,13 @@ class ForestPlotter(BasePlotter):
                 )
             ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Prevalence Estimates</b><br><sup>Target: {target} | Stratified by {', '.join(result.stratified_by)}</sup>",
             xaxis_title="Prevalence (%)",
             yaxis_title=y_col.replace('_', ' ').title(),
             xaxis=dict(tickformat='.0%'),  # Clean percentage formatting on the X-axis
-            yaxis=dict(autorange='reversed'),  # Ensures highest rank is at the top
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            yaxis=dict(autorange='reversed')  # Ensures highest rank is at the top
+        ))
 
 
 @BasePlotter.register_plotter(estimators.IncidenceEstimates, PlotType.EPICURVE)
@@ -274,7 +272,7 @@ class EpicurvePlotter(BasePlotter):
                 direction = "Increasing" if irr > 1 else "Decreasing"
                 subtitle = f"<br><sup>Trend: {direction} (IRR: {irr:.2f} per time step)</sup>"
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Epidemic Curve: {result.target}</b>{subtitle}",
             xaxis=dict(title="Date", type='date'),
             yaxis=dict(title='Count'),
@@ -283,9 +281,8 @@ class EpicurvePlotter(BasePlotter):
             showlegend=True,
             legend=dict(
                 orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"
-            ),
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            )
+        ))
 
 
 @BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.LONGITUDINAL_PREVALENCE)
@@ -330,12 +327,11 @@ class LongitudinalPrevalencePlotter(BasePlotter):
             hovertemplate="<b>Date</b>: %{x}<br><b>Prevalence</b>: %{y:.2%}<extra></extra>"
         ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Longitudinal Prevalence of {result.target}</b>",
             xaxis=dict(title=time_col.title()),
-            yaxis=dict(title='Prevalence', tickformat='.0%', range=[0, 1.05]),
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            yaxis=dict(title='Prevalence', tickformat='.0%', range=[0, 1.05])
+        ))
 
 
 @BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.VACCINE_COVERAGE)
@@ -398,13 +394,12 @@ class VaccineCoveragePlotter(BasePlotter):
             text=hover_text, hoverinfo='text'
         ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Cumulative Vaccine Coverage</b><br><sup>Targeting top {len(data)} {target_col} variants</sup>",
             xaxis=dict(title=f"Variant ({target_col}) added to formulation", tickangle=45),
             yaxis=dict(title='Cumulative Population Coverage', tickformat='.0%', range=[0, 1.05]),
-            hovermode="x unified",
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            hovermode="x unified"
+        ))
 
 
 @BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.CHOROPLETH)
@@ -463,15 +458,14 @@ class ChoroplethPlotter(BasePlotter):
 
         title_prefix = "Regional Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Regional Prevalence of"
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             # Dynamically updates the title so the user knows exactly what is mapped!
             title=f"<b>{title_prefix} {target_name}</b>",
             mapbox_style="carto-positron",
             mapbox_zoom=1,
             mapbox_center={"lat": 0, "lon": 0},
-            margin={"r": 0, "t": 60, "l": 0, "b": 0},
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            margin={"r": 0, "t": 60, "l": 0, "b": 0}
+        ))
 
 
 @BasePlotter.register_plotter(estimators.PrevalenceEstimates, PlotType.SPATIAL_SURFACE)
@@ -516,14 +510,13 @@ class SpatialSurfacePlotter(BasePlotter):
 
         title_prefix = "Spatial Composition of" if result.aggregation_type == AggregationType.COMPOSITIONAL else "Spatial Surface for"
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>{title_prefix} {result.target}</b><br><sup>Gaussian Process Prediction Surface</sup>",
             mapbox_style="carto-positron", # Clean neutral map
             mapbox_zoom=3,
             mapbox_center={"lat": data[lat_col].mean(), "lon": data[lon_col].mean()},
-            margin={"r": 0, "t": 60, "l": 0, "b": 0},
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            margin={"r": 0, "t": 60, "l": 0, "b": 0}
+        ))
 
 
 @BasePlotter.register_plotter(estimators.AlphaDiversityEstimates, PlotType.ALPHA_DIVERSITY)
@@ -573,13 +566,12 @@ class AlphaDiversityPlotter(BasePlotter):
             customdata=data['n_samples']
         ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Alpha Diversity ({metric.title()})</b><br><sup>Target: {result.target}</sup>",
             xaxis=dict(title=group_col.title() if group_col != 'Global' else ''),
             yaxis=dict(title=f'{metric.title()} Index', rangemode='tozero'),  # Stems must anchor to 0
-            showlegend=False,
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            showlegend=False
+        ))
 
 
 
@@ -622,15 +614,14 @@ class BetaHeatmapPlotter(BasePlotter):
             colorbar=dict(title=f"{result.metric.title()}<br>Distance")
         ))
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Beta Diversity ({result.metric.title()})</b><br><sup>Target: {result.target_trait}</sup>",
             xaxis=dict(title='', tickangle=45),
             yaxis=dict(title='', autorange='reversed'),  # Reversing Y puts the triangle in the correct academic orientation
             margin=dict(l=20, r=20, t=60, b=80),  # Extra bottom margin for angled text
             width=700,
-            height=700,  # Force a square aspect ratio so the matrix cells are perfect squares
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            height=700  # Force a square aspect ratio so the matrix cells are perfect squares
+        ))
 
 
 @BasePlotter.register_plotter(Formulation, PlotType.STABILITY_BUMP)
@@ -682,11 +673,10 @@ class StabilityBumpPlotter(BasePlotter):
             annotation_position="bottom right"
         )
 
-        return fig.update_layout(
+        return cls.apply_theme(fig.update_layout(
             title=f"<b>Target Priority Stability (LOO)</b><br><sup>Targeting Top {valency} {formulation.target} Variants</sup>",
-            hovermode="x unified",
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        ).update_xaxes(
+            hovermode="x unified"
+        )).update_xaxes(
             title="Excluded Group (Leave-One-Out)"
         ).update_yaxes(
             title="Priority Rank",
@@ -709,7 +699,6 @@ class NetworkPlotter(BasePlotter):
 
         # Fallback to calculate MDS if it wasn't passed in via a cache
         if pos is None:
-            from sklearn.manifold import MDS
             mask = (dense_dist == 0) & (~np.eye(dense_dist.shape[0], dtype=bool))
             if mask.any():
                 dense_dist[mask] = dense_dist.max() * 2
@@ -763,11 +752,10 @@ class NetworkPlotter(BasePlotter):
             hovertext=hover_text, hoverinfo="text", marker=marker_dict
         )
 
-        return go.Figure(data=[edge_trace, node_trace]).update_layout(
+        return cls.apply_theme(go.Figure(data=[edge_trace, node_trace]).update_layout(
             title=title,
             showlegend=False, hovermode='closest',
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            margin=dict(b=20, l=5, r=5, t=60),
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+            margin=dict(b=20, l=5, r=5, t=60)
+        ))

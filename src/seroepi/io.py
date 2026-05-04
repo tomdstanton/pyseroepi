@@ -2,10 +2,12 @@
 Module for genotype file I/O and parsing.
 """
 
-from typing import Optional, Any
+from pathlib import Path
+from typing import Optional, Any, Union
 import pandas as pd
 import pandera.pandas as pa
 from pandera.typing import Series
+from seroepi.constants import TimeResolution, GeoResolution
 
 
 # Schema & Data Stewardship --------------------------------------------------------------------------------------------
@@ -47,7 +49,7 @@ class UnifiedIsolateSchema(pa.DataFrameModel):
     # ADDED: Temporal Fields (Required so 'strict=filter' doesn't delete them!)
     date: Optional[Series["datetime64[ns]"]] = pa.Field(nullable=True, coerce=True)
     date_resolution: Optional[Series["category"]] = pa.Field(
-        isin=['year', 'month', 'day', 'unknown'], nullable=True, coerce=True
+        isin=TimeResolution.choices(), nullable=True, coerce=True
     )
 
     # Spatial Fields
@@ -57,7 +59,7 @@ class UnifiedIsolateSchema(pa.DataFrameModel):
     region: Optional[Series["string"]] = pa.Field(nullable=True, coerce=True)
     iso3: Optional[Series["string"]] = pa.Field(nullable=True, coerce=True)
     spatial_resolution: Optional[Series["category"]] = pa.Field(
-        isin=['exact', 'hospital', 'city', 'country', 'region', 'unknown'], nullable=True, coerce=True
+        isin=GeoResolution.choices(), nullable=True, coerce=True
     )
 
     # Genotypes
@@ -111,13 +113,13 @@ class BaseParser:
         s = s.replace(['nan', '<NA>', 'None', ''], pd.NA)
         lengths = s.str.len()
 
-        df['date_resolution'] = 'unknown'
-        df.loc[lengths == 4, 'date_resolution'] = 'year'
-        df.loc[(lengths >= 6) & (lengths <= 7) & s.str.contains(r'-|/', na=False), 'date_resolution'] = 'month'
-        df.loc[lengths >= 8, 'date_resolution'] = 'day'
+        df['date_resolution'] = TimeResolution.UNKNOWN.value
+        df.loc[lengths == 4, 'date_resolution'] = TimeResolution.YEAR.value
+        df.loc[(lengths >= 6) & (lengths <= 7) & s.str.contains(r'-|/', na=False), 'date_resolution'] = TimeResolution.MONTH.value
+        df.loc[lengths >= 8, 'date_resolution'] = TimeResolution.DAY.value
 
-        is_year = df['date_resolution'] == 'year'
-        is_month = df['date_resolution'] == 'month'
+        is_year = df['date_resolution'] == TimeResolution.YEAR.value
+        is_month = df['date_resolution'] == TimeResolution.MONTH.value
 
         s.loc[is_year] = s.loc[is_year] + '-07-02'
         s.loc[is_month] = s.loc[is_month] + '-15'
@@ -207,6 +209,29 @@ class BaseParser:
                 if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
                     df_opt[col] = df_opt[col].astype('Int8')
         return df_opt
+
+    @classmethod
+    def from_files(
+            cls,
+            genotype_path: Union[str, Path],
+            meta_path: Optional[Union[str, Path]] = None,
+            meta_kwargs: dict = None
+    ) -> pd.DataFrame:
+        """
+        Convenience factory to read CSV files and parse them.
+        
+        Args:
+            genotype_path: Path to the raw genotype CSV.
+            meta_path: Optional path to the metadata CSV.
+            meta_kwargs: Arguments for metadata ingestion.
+        """
+        genotype_df = pd.read_csv(genotype_path, engine="pyarrow")
+        meta_df = None
+        
+        if meta_path is not None:
+            meta_df = pd.read_csv(meta_path, engine="pyarrow")
+            
+        return cls.parse(genotype_df, meta_df=meta_df, meta_kwargs=meta_kwargs)
 
     @classmethod
     def parse(

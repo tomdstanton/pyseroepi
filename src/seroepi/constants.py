@@ -22,7 +22,6 @@ class _UiEnum(StrEnum):
         return {e.value: e.value.replace('_', ' ').title() for e in cls}
 
 
-
 class PlotType(_UiEnum):
     FOREST = auto()
     EPICURVE = auto()
@@ -73,3 +72,44 @@ class EstimatorType(_UiEnum):
 class InferenceMethod(_UiEnum):
     MCMC = "mcmc"
     SVI = "svi"
+
+
+class TimeResolution(_UiEnum):
+    YEAR = "year"
+    MONTH = "month"
+    WEEK = "week"
+    DAY = "day"
+    UNKNOWN = "unknown"
+
+    @property
+    def pandas_offset(self) -> str:
+        """Returns the modern Pandas 2.2+ offset alias."""
+        return {
+            self.YEAR: 'YE',
+            self.MONTH: 'ME',
+            self.WEEK: 'W',
+            self.DAY: 'D',
+            self.UNKNOWN: ''
+        }[self]
+
+
+class GeoResolution(_UiEnum):
+    GLOBAL = "global"
+    CONTINENT = "continent"
+    REGION = "region"
+    COUNTRY = "country"
+    CITY = "city"
+    HOSPITAL = "hospital"
+    EXACT = "exact"
+    UNKNOWN = "unknown"
+
+    @property
+    def pandas_period(self) -> str:
+        """Returns the Pandas period alias."""
+        return {
+            self.YEAR: 'Y',
+            self.MONTH: 'M',
+            self.WEEK: 'W',
+            self.DAY: 'D',
+            self.UNKNOWN: ''
+        }[self]

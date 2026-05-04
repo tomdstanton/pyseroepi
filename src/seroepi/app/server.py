@@ -176,20 +176,14 @@ def _burden_server(input, output, session, app_state: dict):
 
         with ui.Progress(min=0, max=100) as p:
             try:
-                p.set(message="Parsing Kleborate Output...", value=10)
+                p.set(message="Reading and Merging Datasets...", value=20)
                 await asyncio.sleep(0)  # Yield to event loop to update UI
-                genotype_df = await asyncio.to_thread(pd.read_csv, genotype_info[0]["datapath"], engine="pyarrow")
-                metadata_df = None
+                
                 metadata_kwargs = {}
-
-                # Check if metadata was uploaded AND if they mapped the columns
+                meta_path = None
+                
                 if metadata_info := input.metadata_file():
-                    p.set(message="Parsing Metadata...", value=20)
-                    await asyncio.sleep(0)
-                    metadata_df = await asyncio.to_thread(pd.read_csv, metadata_info[0]["datapath"], engine="pyarrow")
-
-                    # Dynamically build the kwargs from the UI dropdowns!
-                    # The `or None` ensures we don't pass empty strings if they left a dropdown blank
+                    meta_path = metadata_info[0]["datapath"]
                     metadata_kwargs = {
                         "id_col": input.map_id() or None,
                         "date_col": input.map_date() or None,
@@ -202,14 +196,11 @@ def _burden_server(input, output, session, app_state: dict):
                     if not metadata_kwargs["id_col"]:
                         ui.notification_show("You must select a Sample ID column to merge metadata.", type="error")
                         return
-
-                p.set(message="Merging Datasets...", value=30)
-                await asyncio.sleep(0)
                 
                 def parse_and_impute():
-                    d = PathogenwatchKleborateParser.parse(
-                        genotype_df,
-                        meta_df=metadata_df,
+                    d = PathogenwatchKleborateParser.from_files(
+                        genotype_path=genotype_info[0]["datapath"],
+                        meta_path=meta_path,
                         meta_kwargs=metadata_kwargs
                     )
                     return d.geo.standardize_and_impute()
@@ -830,7 +821,7 @@ def _burden_server(input, output, session, app_state: dict):
     async def network_layout():
         dist = shared_dist.get()
         if dist is None:
-            return None, None
+            return None
             
         with ui.Progress(min=0, max=100) as p:
             p.set(message="Preparing distance matrix...", value=20)
@@ -857,19 +848,21 @@ def _burden_server(input, output, session, app_state: dict):
             p.set(message="Layout complete!", value=100)
             await asyncio.sleep(0)
             
-            return dense_dist, pos
+            return pos
 
     @render_widget
     async def cluster_network_plot():
         df = shared_df.get()
         dist = shared_dist.get()
         
+        empty_theme = dict(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94A3B8'))
+        
         if df is None or dist is None:
-            return go.Figure().update_layout(title="Upload a SNP distance matrix in Tab 1 to view the network.", template="plotly_white")
+            return go.Figure().update_layout(title="Upload a SNP distance matrix in Tab 1 to view the network.", **empty_theme)
             
-        dense_dist, pos = await network_layout()
+        pos = await network_layout()
         if pos is None:
-            return go.Figure().update_layout(title="Processing distance matrix...", template="plotly_white")
+            return go.Figure().update_layout(title="Processing distance matrix...", **empty_theme)
             
         # Call the new routing method on the Distances core object!
         return dist.plot(
@@ -957,12 +950,19 @@ def _formulation_server(input, output, session, app_state: dict):
                 p.set(message=f"Running {designer_type.upper()} Designer on {holdout}...", value=50)
                 await asyncio.sleep(0)
                 
+                loop = asyncio.get_running_loop()
+                def ui_progress_callback(current, total):
+                    # Safely update the Shiny UI from the background thread
+                    percentage = 50 + int(45 * (current / total))
+                    message = f"Running CV Fold {current}/{total}..." if designer_type != 'posthoc' else f"Running Permutation {current}/{total}..."
+                    loop.call_soon_threadsafe(p.set, percentage, message)
+                
                 if designer_type == 'posthoc':
                     designer = PostHocFormulationDesigner(valency=input.max_valency(), n_jobs=-1)
-                    await asyncio.to_thread(designer.fit, res, loo_col=holdout)
+                    await asyncio.to_thread(designer.fit, res, loo_col=holdout, progress_callback=ui_progress_callback)
                 else:
                     designer = CVFormulationDesigner(valency=input.max_valency(), n_jobs=-1)
-                    await asyncio.to_thread(designer.fit, est, agg_df, loo_col=holdout)
+                    await asyncio.to_thread(designer.fit, est, agg_df, loo_col=holdout, progress_callback=ui_progress_callback)
 
                 optimal_formulation = designer.formulation_
 

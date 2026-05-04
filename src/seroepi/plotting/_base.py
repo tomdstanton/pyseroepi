@@ -30,6 +30,8 @@ class BasePlotter(ABC):
     _CI_COLOUR = 'rgba(14, 165, 233, 0.2)'
     # A secondary highlight color (Optional, but great for distinguishing target groups)
     _ACCENT_COLOUR = '#EC4899'  # Vibrant Neon Pink
+    _FONT_COLOUR = '#94A3B8'    # Slate 400 (Highly readable on both light and dark backgrounds)
+    _GRID_COLOUR = 'rgba(148, 163, 184, 0.2)'  # Subtle translucent grid lines
     # Global cache to prevent reading the file from disk multiple times
     _WORLD_GEOJSON = None
 
@@ -75,6 +77,26 @@ class BasePlotter(ABC):
             return plotter_cls
 
         return decorator
+        
+    @classmethod
+    def apply_theme(cls, fig: Figure) -> Figure:
+        """Applies a universal transparent theme optimized for both light and dark web app modes."""
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color=cls._FONT_COLOUR)
+        )
+        fig.update_xaxes(
+            gridcolor=cls._GRID_COLOUR,
+            zerolinecolor=cls._GRID_COLOUR,
+            linecolor=cls._GRID_COLOUR
+        )
+        fig.update_yaxes(
+            gridcolor=cls._GRID_COLOUR,
+            zerolinecolor=cls._GRID_COLOUR,
+            linecolor=cls._GRID_COLOUR
+        )
+        return fig
 
     @classmethod
     @abstractmethod

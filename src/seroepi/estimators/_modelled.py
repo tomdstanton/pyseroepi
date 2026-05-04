@@ -5,8 +5,6 @@ from joblib import dump as joblib_dump, load as joblib_load
 from warnings import warn
 from multiprocessing import cpu_count
 import functools
-import io
-import contextlib
 import pandas as pd
 import numpy as np
 from scipy.special import expit
@@ -18,7 +16,7 @@ from jax import random, vmap, jit
 from numpyro import optim, distributions as dist, diagnostics as diag, sample as samp, set_host_device_count
 from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
 from seroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
-from seroepi.constants import InferenceMethod
+from seroepi.constants import InferenceMethod, TimeResolution
 
 
 # Set-up ---------------------------------------------------------------------------------------------------------------
@@ -126,6 +124,7 @@ class BayesianMixin:
         self.svi_steps = svi_steps
         self.seed = seed
         self.samples_ = None
+        self.extra_fields_ = None
 
     def _run_inference(self, jax_data: dict, rng_key: random.PRNGKey):
         """Routes to the correct inference engine based on self.method."""
@@ -141,6 +140,7 @@ class BayesianMixin:
         mcmc = MCMC(NUTS(self._model), num_warmup=self.num_warmup, num_samples=self.num_samples,
                     num_chains=self.num_chains, progress_bar=False)
         mcmc.run(rng_key, **jax_data)
+        self.extra_fields_ = mcmc.get_extra_fields()
         return mcmc.get_samples()
 
     def _svi_inference(self, jax_data: dict, rng_key: random.PRNGKey):
@@ -180,6 +180,17 @@ class BayesianMixin:
                     row.update({k: float(np.asarray(v)[idx]) for k, v in stats.items()})
                     rows.append(row)
                     
+        # Safely extract and append the MCMC sampler's internal extra fields
+        if getattr(self, 'extra_fields_', None) is not None:
+            for field, values in self.extra_fields_.items():
+                val_array = np.asarray(values, dtype=float)
+                rows.append({
+                    'Parameter': f"sampler_{field}",
+                    'mean': float(np.mean(val_array)),
+                    'std': float(np.std(val_array)),
+                    'sum': float(np.sum(val_array))
+                })
+
         return pd.DataFrame(rows)
 
 
@@ -635,11 +646,11 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
             # Create a numeric Time Step for the slope
             time_deltas = df_model['date'] - df_model['date'].min()
 
-            if self.freq_.startswith('M'):
+            if self.freq_ == TimeResolution.MONTH.value or self.freq_.startswith('M'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'M'))
-            elif self.freq_.startswith('W'):
+            elif self.freq_ == TimeResolution.WEEK.value or self.freq_.startswith('W'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'W'))
-            elif self.freq_.startswith('Y'):
+            elif self.freq_ == TimeResolution.YEAR.value or self.freq_.startswith('Y'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'Y'))
             else:
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'D'))

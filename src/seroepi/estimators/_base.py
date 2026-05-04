@@ -185,10 +185,10 @@ class IncidenceEstimates(Estimates):
     Container for time-series incidence results.
 
     Attributes:
-        freq: The time resolution used (e.g., 'ME').
+        freq: The time resolution used (e.g., TimeResolution.MONTH.value).
         aggregation_type: Either 'trait' or 'compositional'.
         model_results: A DataFrame containing regression outputs (IRR, CIs, P-values).
     """
-    freq: str                   # The time resolution (e.g., 'ME')
+    freq: str                   # The time resolution (e.g., TimeResolution.MONTH.value)
     aggregation_type: AggregationType         # "trait" or "compositional"
     model_results: pd.DataFrame # The regression outputs (IRR, CIs, P-values)

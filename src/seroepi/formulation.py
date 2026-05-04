@@ -4,9 +4,10 @@ Module for abstracting a vaccine formulation using trait prevalence and stabilit
 from dataclasses import dataclass
 import pandas as pd
 from abc import ABC
-from typing import Optional
+from typing import Optional, Callable
 from joblib import Parallel, delayed
 from seroepi.estimators._base import BaseEstimator
+from seroepi.estimators._modelled import ModelledMixin
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -19,7 +20,7 @@ class Formulation:
     stability metrics from cross-validation, and permutation history.
 
     Attributes:
-        target: The target target type (e.g., 'K_locus').
+        target: The target type (e.g., 'K_locus').
         max_valency: The maximum number of targets in the formulation.
         rankings: A DataFrame containing the definitive ranking of targets
             (Antigen, Rank, Prevalence, Cumulative Coverage).
@@ -130,7 +131,7 @@ class Formulation:
         return self.rankings.head(self.max_valency)['target'].tolist()
 
 
-class BaseFormulationDesigner(ABC):
+class BaseFormulationDesigner(ModelledMixin, ABC):
     """
     Abstract base class for formulation designers.
 
@@ -155,9 +156,22 @@ class BaseFormulationDesigner(ABC):
         self.n_jobs = n_jobs
         self.formulation_: Optional[Formulation] = None
 
-    def fit(self, *args, **kwargs) -> 'BaseFormulationDesigner':
+    def fit(self, *args, progress_callback: Optional[Callable[[int, int], None]] = None, **kwargs) -> 'BaseFormulationDesigner':
         """Calculates the formulation and stores it in self.formulation_"""
         pass
+        
+    def predict(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Uses the fitted formulation to predict vaccine coverage on a given DataFrame.
+        Returns only the rows that are covered by the designed formulation.
+        """
+        self.check_is_fitted()
+        target = self.formulation_.target
+        if target not in df.columns:
+            raise KeyError(f"The target column '{target}' was not found in the provided DataFrame.")
+            
+        covered_targets = self.formulation_.get_formulation()
+        return df[df[target].isin(covered_targets)].copy()
 
 
 class PostHocFormulationDesigner(BaseFormulationDesigner):
@@ -168,7 +182,7 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
     required for Leave-One-Out (LOO) analysis.
     """
 
-    def fit(self, result: 'PrevalenceEstimates', loo_col: str) -> 'PostHocFormulationDesigner':
+    def fit(self, result: 'PrevalenceEstimates', loo_col: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> 'PostHocFormulationDesigner':
         """
         Evaluates prevalence results to design a formulation.
 
@@ -190,8 +204,10 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
         total_estimates = raw_df.groupby(target)['estimate'].sum()
         group_target_estimates = raw_df.groupby([loo_col, target])['estimate'].sum().unstack(fill_value=0)
 
+        unique_groups = raw_df[loo_col].unique()
+        total_groups = len(unique_groups)
         loo_records = []
-        for group in raw_df[loo_col].unique():
+        for i, group in enumerate(unique_groups, 1):
             # Subtract the holdout group's contribution from the global total
             if group in group_target_estimates.index:
                 loo_estimates = total_estimates - group_target_estimates.loc[group]
@@ -203,11 +219,15 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
             loo_ranks['loo_rank'] = loo_ranks.index + 1
             loo_ranks['holdout_group'] = group
             loo_records.append(loo_ranks)
+            
+            if progress_callback:
+                progress_callback(i, total_groups)
 
         history = pd.concat(loo_records, ignore_index=True)
 
         # 3. Compile
         self.formulation_ = _compile_stability_metrics(baseline, history, target, self.valency)
+        self.is_fitted_ = True
         return self
 
 
@@ -218,7 +238,7 @@ class CVFormulationDesigner(BaseFormulationDesigner):
     This method retrains the model for each LOO permutation, which is more
     computationally expensive but necessary for complex models.
     """
-    def fit(self, estimator: BaseEstimator, agg_df: pd.DataFrame, loo_col: str) -> 'CVFormulationDesigner':
+    def fit(self, estimator: BaseEstimator, agg_df: pd.DataFrame, loo_col: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> 'CVFormulationDesigner':
         """
         Evaluates an estimator using LOO cross-validation to design a formulation.
 
@@ -237,16 +257,27 @@ class CVFormulationDesigner(BaseFormulationDesigner):
 
         # 2. Permutations (Parallel Processing)
         groups = agg_df[loo_col].unique()
+        total_groups = len(groups)
         
-        loo_records = Parallel(n_jobs=self.n_jobs)(
-            delayed(_run_cv_fold)(estimator, agg_df, loo_col, group, target) 
-            for group in groups
-        )
+        jobs = (delayed(_run_cv_fold)(estimator, agg_df, loo_col, group, target) for group in groups)
+
+        loo_records = []
+        try:
+            for i, result in enumerate(Parallel(n_jobs=self.n_jobs, return_as="generator")(jobs), 1):
+                loo_records.append(result)
+                if progress_callback:
+                    progress_callback(i, total_groups)
+        except TypeError:
+            # Fallback for joblib < 1.3 where return_as="generator" isn't supported
+            loo_records = Parallel(n_jobs=self.n_jobs)(jobs)
+            if progress_callback:
+                progress_callback(total_groups, total_groups)
 
         history = pd.concat(loo_records, ignore_index=True)
 
         # 3. Compile
         self.formulation_ = _compile_stability_metrics(baseline, history, target, self.valency)
+        self.is_fitted_ = True
         return self
 
 
