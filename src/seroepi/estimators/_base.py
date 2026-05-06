@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, TypeVar, Generic, Optional
 from dataclasses import dataclass
+from typing import Tuple, TypeVar, Generic, Optional
 from warnings import warn
 import pandas as pd
-from seroepi.constants import PlotType, AggregationType
+
+from seroepi.constants import Domain, AggregationType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -63,8 +64,8 @@ class BaseEstimator(ABC, Generic[T_Result]):
                     f"Please bin this variable (e.g., using pd.cut()) before aggregating."
                 )
 
-            # 2. The Raw Datetime Trap (Checks dtype OR the 'meta_' prefix)
-            if pd.api.types.is_datetime64_any_dtype(df[col]) or 'date' in col.lower():
+            # 2. The Raw Datetime Trap (Checks dtype, standard 'date' name, OR the 'temporal_' prefix)
+            if pd.api.types.is_datetime64_any_dtype(df[col]) or 'date' in col.lower() or col.startswith(f"{Domain.TEMPORAL.value}_"):
                 # We only warn here, because sometimes daily is intentional during a rapid outbreak
                 warn(
                     f"You are stratifying on a raw date column '{col}'. "
@@ -99,6 +100,7 @@ class BaseEstimator(ABC, Generic[T_Result]):
         pass
 
 
+
 # Result dataclasses ---------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Estimates:
@@ -109,39 +111,13 @@ class Estimates:
         data: A DataFrame containing the estimates and original strata.
         stratified_by: List of columns used for stratification.
         adjusted_for: Column name used for cluster adjustment, if any.
-        target: The target variable for which estimates were calculated.
+        trait: The trait variable for which estimates were calculated.
     """
     data: pd.DataFrame
     stratified_by: list[str]
     adjusted_for: Optional[str]
-    target: str  # e.g., "blaKPC" or "Serotype"
-
-    def plot(self, kind: PlotType, **kwargs):
-        """
-        Renders a visualization of the estimates.
-
-        Args:
-            kind: The type of plot to render.
-            **kwargs: Additional arguments passed to the plotter.
-
-        Returns:
-            A plotly Figure object.
-        """
-        try:  # LAZY IMPORT: We only try to import the registry when the user actually calls .plot()
-            from seroepi.plotting._base import BasePlotter
-        except ImportError as e:
-            # The Sophisticated Trap: Catch the specific missing dependency and give a beautiful error
-            raise ImportError(
-                "Plotting features require the optional 'plot' dependencies.\n"
-                "Please install them by running: pip install seroepi[plot]"
-            ) from None  # 'from None' hides the ugly raw stack trace from the user
-
-        plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
-        if (plotter := plotter_map.get(kind)) is None:
-            available = list(plotter_map.keys())
-            raise ValueError(f"Plot type '{kind}' is not registered. Available: {available}")
-
-        return plotter.render(self, **kwargs)
+    trait: str  # e.g., "blaKPC" or "Serotype"
+    aggregation_type: AggregationType  # "trait" or "compositional"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,10 +127,8 @@ class PrevalenceEstimates(Estimates):
 
     Attributes:
         method: The statistical method used (e.g., 'bayesian_mcmc').
-        aggregation_type: Either 'trait' or 'compositional'.
     """
     method: str
-    aggregation_type: AggregationType  # "trait" or "compositional"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,10 +159,8 @@ class IncidenceEstimates(Estimates):
     Container for time-series incidence results.
 
     Attributes:
-        freq: The time resolution used (e.g., TimeResolution.MONTH.value).
-        aggregation_type: Either 'trait' or 'compositional'.
+        freq: The time resolution used (e.g., TemporalResolution.MONTH.value).
         model_results: A DataFrame containing regression outputs (IRR, CIs, P-values).
     """
-    freq: str                   # The time resolution (e.g., TimeResolution.MONTH.value)
-    aggregation_type: AggregationType         # "trait" or "compositional"
+    freq: str                   # The time resolution (e.g., TemporalResolution.MONTH.value)
     model_results: pd.DataFrame # The regression outputs (IRR, CIs, P-values)

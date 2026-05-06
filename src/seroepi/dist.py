@@ -1,72 +1,27 @@
 """
 Module to handle genetic distance measures between isolates.
 """
-
 from dataclasses import dataclass, replace
-from enum import Enum, auto
-from typing import Self
+import inspect
+from abc import ABC, abstractmethod
 from io import StringIO
+from pathlib import Path
+from typing import Union
 import pandas as pd
 import numpy as np
 from scipy.sparse import coo_array, csr_array
 from scipy.sparse.csgraph import connected_components as sp_connected_components
+from sklearn.manifold import MDS
+from sklearn.neighbors import BallTree
+from seroepi.constants import DistanceMetricType, DistanceFlavour
 
-
-# Constants ------------------------------------------------------------------------------------------------------------
-class MetricType(str, Enum):
-    """
-    Enumeration of supported metric types for pairwise comparisons.
-
-    These metric types define how to interpret the numerical values 
-    in a distance/similarity matrix.
-
-    Attributes:
-        ABSOLUTE_DISTANCE: An absolute distance measure (e.g., 5 SNPs).
-        RELATIVE_DISTANCE: A relative distance measure typically between 0.0 and 1.0 (e.g., 0.05 Hamming).
-        ABSOLUTE_SIMILARITY: An absolute similarity measure (e.g., 95 shared nucleotides).
-        RELATIVE_SIMILARITY: A relative similarity measure typically between 0.0 and 1.0 (e.g., 0.95 Jaccard).
-    """
-    ABSOLUTE_DISTANCE = auto()  # e.g., 5 SNPs
-    RELATIVE_DISTANCE = auto()  # e.g., 0.05 Hamming
-    ABSOLUTE_SIMILARITY = auto()  # e.g., 95 shared nucleotides
-    RELATIVE_SIMILARITY = auto()  # e.g., 0.95 Jaccard
-
-    @classmethod
-    def _missing_(cls, value):
-        if isinstance(value, str):
-            if v := cls.__members__.get(value.upper().replace(" ", "_").replace("-", "_")):
-                return v
-        return cls.ABSOLUTE_DISTANCE
 
 # Classes --------------------------------------------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
-class Distances:
-    """
-    Container for sparse distance matrices between isolates.
-
-    This class provides a memory-efficient way to store and manipulate pairwise
-    distances, supporting various metric types and conversions.
-
-    Attributes:
-        matrix (csr_array): The underlying sparse distance matrix in CSR format.
-        index (pd.Series): Sample identifiers corresponding to the matrix rows/columns.
-        metric_type (MetricType): The type of metric represented (e.g., ABSOLUTE_DISTANCE).
-        max_value (float): The maximum possible value for the metric, used for
-            conversions between absolute and relative types.
-
-    Examples:
-        >>> import pandas as pd
-        >>> import numpy as np
-        >>> from seroepi.dist import Distances, MetricType
-        >>> q = pd.Series(['S1', 'S1'])
-        >>> t = pd.Series(['S2', 'S3'])
-        >>> w = pd.Series([5, 10])
-        >>> dists = Distances.from_pairwise(q, t, w)
-        >>> print(dists.matrix.toarray())
-    """
+class DistancesBase(ABC):
     matrix: csr_array
     index: pd.Series
-    metric_type: MetricType
+    metric_type: DistanceMetricType
     max_value: float = None  # Required if converting between absolute and relative
 
     def __post_init__(self):
@@ -78,31 +33,76 @@ class Distances:
             raise ValueError("Number of labels must match matrix dimensions.")
         self.index.name = 'sample_id'
 
-    def plot(self, kind: str, **kwargs):
+    @abstractmethod
+    def get_clusters(self, *args, **kwargs) -> pd.Series[pd.CategoricalDtype]: ...
+
+    def layout(self, random_state: int = 42, n_init: int = 1, max_iter: int = 100) -> np.ndarray:
         """
-        Renders a visualization of the distance matrix.
+        Calculates a 2D layout for the distance matrix using Multi-Dimensional Scaling (MDS).
 
         Args:
-            kind: The type of plot to render (e.g., 'network').
-            **kwargs: Additional arguments passed to the plotter.
+            random_state: Seed for reproducibility. Defaults to 42.
+            n_init: Number of initialization runs. Defaults to 1 for speed.
+            max_iter: Maximum iterations. Defaults to 100 for speed.
 
         Returns:
-            A plotly Figure object.
+            A numpy array of shape (n_samples, 2) containing the 2D coordinates.
         """
-        try:
-            from seroepi.plotting._base import BasePlotter
-        except ImportError:
-            raise ImportError("Plotting features require the optional 'plot' dependencies.\n"
-                              "Please install them by running: pip install seroepi[plot]") from None
+        dense_dist = self.matrix.toarray().astype(float)
 
-        plotter_map = BasePlotter._PLOT_REGISTRY.get(type(self), {})
-        if (plotter := plotter_map.get(kind)) is None:
-            raise ValueError(f"Plot type '{kind}' is not registered. Available: {list(plotter_map.keys())}")
-        return plotter.render(self, **kwargs)
+        if self.metric_type in [DistanceMetricType.ABSOLUTE_SIMILARITY, DistanceMetricType.RELATIVE_SIMILARITY]:
+            # Convert similarity to dissimilarity for MDS
+            max_val = self.max_value if self.max_value is not None else 1.0
+            dense_dist = max_val - dense_dist
+            mask = (dense_dist == max_val) & (~np.eye(dense_dist.shape[0], dtype=bool))
+            if mask.any():
+                dense_dist[mask] = max_val * 2
+        else:
+            # If the matrix was sparse, 0s off the diagonal represent missing data. Fill with max distance.
+            mask = (dense_dist == 0) & (~np.eye(dense_dist.shape[0], dtype=bool))
+            if mask.any():
+                dense_dist[mask] = dense_dist.max() * 2
+
+        mds_kwargs = {
+            'n_components': 2,
+            'dissimilarity': 'precomputed',
+            'random_state': random_state,
+            'n_init': n_init,
+            'max_iter': max_iter
+        }
+        
+        # Dynamically suppress scikit-learn API FutureWarnings
+        sig = inspect.signature(MDS.__init__)
+        if 'normalized_stress' in sig.parameters: mds_kwargs['normalized_stress'] = 'auto'
+        if 'init' in sig.parameters: mds_kwargs['init'] = 'random'
+            
+        mds = MDS(**mds_kwargs)
+        return mds.fit_transform(dense_dist)
+
+
+@dataclass(frozen=True, slots=True)
+class GenomicDistances(DistancesBase):
+
+    @classmethod
+    def from_file(cls, filepath_or_buffer: Union[str, Path], flavour: Union[str, DistanceFlavour]) -> 'GenomicDistances':
+        """
+        Factory method to parse a distance matrix or tree from a file based on flavour.
+        """
+        flavour_val = flavour.value if isinstance(flavour, DistanceFlavour) else flavour
+        if flavour_val == DistanceFlavour.PATHOGENWATCH.value:
+            return cls.from_pathogenwatch(filepath_or_buffer)
+        elif flavour_val == DistanceFlavour.SKA2.value:
+            return cls.from_ska2(filepath_or_buffer)
+        elif flavour_val == DistanceFlavour.NEWICK.value:
+            with open(filepath_or_buffer, 'r') as f:
+                newick_string = f.read()
+            return cls.from_newick(newick_string)
+        else:
+            raise ValueError(f"Unknown distance flavour: {flavour_val}")
 
     @classmethod
     def from_pairwise(cls, query_col: pd.Series, target_col: pd.Series, weight_col: pd.Series,
-                      metric_type: MetricType = MetricType.ABSOLUTE_DISTANCE) -> Self:
+                      metric_type: DistanceMetricType = DistanceMetricType.ABSOLUTE_DISTANCE) -> GenomicDistances:
         """
         Creates a Distances instance from long-format pairwise data.
 
@@ -134,7 +134,7 @@ class Distances:
         return cls(M.maximum(M.T).tocsr(), pd.Series(uids), metric_type)
 
     @classmethod
-    def from_ska2(cls, filepath_or_buffer) -> Self:
+    def from_ska2(cls, filepath_or_buffer) -> GenomicDistances:
         """
         Parses a pairwise distance matrix from SKA2 output.
 
@@ -148,7 +148,7 @@ class Distances:
         return cls.from_pairwise(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])
 
     @classmethod
-    def from_pathogenwatch(cls, filepath_or_buffer) -> Self:
+    def from_pathogenwatch(cls, filepath_or_buffer) -> GenomicDistances:
         """
         Parses a square distance matrix from Pathogenwatch.
 
@@ -161,10 +161,10 @@ class Distances:
         df = pd.read_csv(filepath_or_buffer, index_col=0)
         M = coo_array(df.values)
         M = M.maximum(M.T)
-        return cls(M.tocsr(), pd.Series(df.columns), MetricType.ABSOLUTE_DISTANCE)
+        return cls(M.tocsr(), pd.Series(df.columns), DistanceMetricType.ABSOLUTE_DISTANCE)
 
     @classmethod
-    def from_newick(cls, newick_string: str) -> Self:
+    def from_newick(cls, newick_string: str) -> GenomicDistances:
         """
         Parses a Newick string and calculates patristic distances.
 
@@ -204,12 +204,12 @@ class Distances:
         return cls(
             matrix=csr_array(matrix),
             index=pd.Series(labels),
-            metric_type=MetricType.ABSOLUTE_DISTANCE
+            metric_type=DistanceMetricType.ABSOLUTE_DISTANCE
         )
 
-    def connected_components(self, threshold: int = 20) -> pd.Series:
+    def get_clusters(self, threshold: int = 20) -> pd.Series:
         """
-        Identifies connected components (clusters) based on a distance threshold.
+        Identifies clusters via connected components based on a distance threshold.
 
         Args:
             threshold: Maximum distance to consider isolates as connected.
@@ -218,49 +218,19 @@ class Distances:
         Returns:
             A Series of cluster labels indexed by isolate IDs.
         """
-        # 1. Make a copy of the CSR array to avoid mutating the frozen original
-        adj = self.matrix.copy()
-        # 2. Convert to a binary adjacency array:
+        adj = self.matrix.copy()  # Make a copy of the CSR array to avoid mutating the frozen original
+        # Convert to a binary adjacency array:
         # If distance <= threshold, make it a 1 (Valid Edge).
         # If distance > threshold, make it a 0 (Severed Edge).
         adj.data = (adj.data <= threshold).astype(np.int8)
-        # 3. Safely eliminate the 0s (which are now only the severed edges).
-        # Your identical clones are safe because their distance of 0 was turned into a 1!
+        # Safely eliminate the 0s (which are now only the severed edges).
+        # Identical clones are safe because their distance of 0 was turned into a 1!
         adj.eliminate_zeros()
-        # 4. Ensure every sample is connected to itself on the diagonal
-        adj.setdiag(1)
-        # 5. Run the clustering algorithm
+        adj.setdiag(1)  # Ensure every sample is connected to itself on the diagonal
         _, labels = sp_connected_components(csgraph=adj, directed=False, return_labels=True)
+        return pd.Series(labels, index=self.index, dtype='category', name=f"connected_components_{threshold=}").cat.as_ordered()
 
-        return pd.Series(labels, index=self.index, dtype='category', name=f"connected_components_{threshold=}")
-
-    def apply_clustering(self, clusterer, **kwargs) -> pd.Series:
-        """
-        Applies an external clustering algorithm to the distance matrix.
-
-        Args:
-            clusterer: An object implementing `fit_predict` (e.g., sklearn.cluster.DBSCAN).
-            **kwargs: Additional arguments passed to `fit_predict`.
-
-        Returns:
-            A Series of cluster labels.
-
-        Raises:
-            TypeError: If the clusterer does not implement `fit_predict`.
-        """
-        if not hasattr(clusterer, "fit_predict"):
-            raise TypeError("The provided model must implement a 'fit_predict' method.")
-
-        # We ensure the metric is a distance, not a similarity, for standard clusterers
-        distance_obj = self.to_type(MetricType.RELATIVE_DISTANCE)
-
-        # Call the external method on our raw sparse array
-        cluster_labels = clusterer.fit_predict(distance_obj.matrix, **kwargs)
-
-        # Return a pandas Series mapped to our original labels
-        return pd.Series(cluster_labels, index=self.index, name=f"{clusterer}_cluster")
-
-    def to_type(self, target_type: MetricType) -> Self:
+    def to_type(self, target_type: DistanceMetricType) -> GenomicDistances:
         """
         Converts the distances to a different metric type.
 
@@ -277,32 +247,32 @@ class Distances:
             return self
 
         # If crossing the Absolute <-> Relative boundary, we need max_value
-        needs_max = {MetricType.ABSOLUTE_DISTANCE, MetricType.ABSOLUTE_SIMILARITY}
-        targets_norm = {MetricType.RELATIVE_DISTANCE, MetricType.RELATIVE_SIMILARITY}
+        needs_max = {DistanceMetricType.ABSOLUTE_DISTANCE, DistanceMetricType.ABSOLUTE_SIMILARITY}
+        targets_norm = {DistanceMetricType.RELATIVE_DISTANCE, DistanceMetricType.RELATIVE_SIMILARITY}
 
         if (self.metric_type in needs_max and target_type in targets_norm) or \
                 (self.metric_type in targets_norm and target_type in needs_max):
             if self.max_value is None:
                 raise ValueError(f"Cannot convert between Absolute and Relative without a max_value.")
 
-        # 1. Standardize to Relative Distance first (as a base state)
-        if self.metric_type == MetricType.ABSOLUTE_DISTANCE:
+        # Standardize to Relative Distance first (as a base state)
+        if self.metric_type == DistanceMetricType.ABSOLUTE_DISTANCE:
             base_mat = self.matrix / self.max_value
-        elif self.metric_type == MetricType.ABSOLUTE_SIMILARITY:
+        elif self.metric_type == DistanceMetricType.ABSOLUTE_SIMILARITY:
             base_mat = 1.0 - (self.matrix / self.max_value)
-        elif self.metric_type == MetricType.RELATIVE_SIMILARITY:
+        elif self.metric_type == DistanceMetricType.RELATIVE_SIMILARITY:
             base_mat = 1.0 - self.matrix
         else:
             base_mat = self.matrix
 
         # 2. Convert from base state (Relative Distance) to Target
-        if target_type == MetricType.RELATIVE_DISTANCE:
+        if target_type == DistanceMetricType.RELATIVE_DISTANCE:
             new_mat = base_mat
-        elif target_type == MetricType.RELATIVE_SIMILARITY:
+        elif target_type == DistanceMetricType.RELATIVE_SIMILARITY:
             new_mat = 1.0 - base_mat
-        elif target_type == MetricType.ABSOLUTE_DISTANCE:
+        elif target_type == DistanceMetricType.ABSOLUTE_DISTANCE:
             new_mat = base_mat * self.max_value
-        elif target_type == MetricType.ABSOLUTE_SIMILARITY:
+        elif target_type == DistanceMetricType.ABSOLUTE_SIMILARITY:
             new_mat = (1.0 - base_mat) * self.max_value
 
         # Explicitly cast back to CSR to prevent dense matrix bleed from scalar subtraction
@@ -311,3 +281,65 @@ class Distances:
             
         # Return a new frozen instance
         return replace(self, matrix=new_mat, metric_type=target_type)
+
+
+class TransmissionDistances(DistancesBase):
+
+    @classmethod
+    def from_spatiotemporal(
+            cls,
+            sample_ids: pd.Series,
+            coords: np.ndarray,
+            dates: np.ndarray,
+            clones: np.ndarray,
+            spatial_threshold_km: float = 10.0,
+            temporal_threshold_days: int = 20,
+    ) -> TransmissionDistances:
+        """Builds a sparse transmission adjacency graph from spatiotemporal arrays."""
+        n = len(sample_ids)
+        global_rows = []
+        global_cols = []
+
+        # Using pandas factorize is extremely fast for finding unique groups (O(N))
+        unique_clones, clone_codes = pd.factorize(clones)
+
+        for clone_code in range(len(unique_clones)):
+            if pd.isna(unique_clones[clone_code]):
+                continue
+
+            idx = np.where(clone_codes == clone_code)[0]
+
+            # Filter to items with valid spatiotemporal data
+            valid_mask = ~(np.isnan(coords[idx, 0]) | np.isnan(coords[idx, 1]) | np.isnan(dates[idx]))
+            valid_idx = idx[valid_mask]
+
+            if len(valid_idx) < 2:
+                continue
+
+            group_coords = coords[valid_idx]
+            group_dates = dates[valid_idx]
+
+            tree = BallTree(group_coords, metric='haversine')
+            radius_radians = spatial_threshold_km / 6371.0
+            spatial_neighbors = tree.query_radius(group_coords, r=radius_radians)
+
+            for i, neighbors in enumerate(spatial_neighbors):
+                time_diffs = np.abs(group_dates[i] - group_dates[neighbors])
+                valid_neighbors = neighbors[time_diffs <= temporal_threshold_days]
+
+                global_rows.extend([valid_idx[i]] * len(valid_neighbors))
+                global_cols.extend(valid_idx[valid_neighbors])
+
+        if global_rows:
+            adj = csr_array((np.ones(len(global_rows), dtype=np.int8), (global_rows, global_cols)), shape=(n, n))
+            adj = adj.maximum(adj.T)  # Ensure undirected symmetry
+        else:
+            adj = csr_array((n, n), dtype=np.int8)
+
+        return cls(matrix=adj, index=pd.Series(sample_ids.values, name='sample_id'),
+                   metric_type=DistanceMetricType.ABSOLUTE_SIMILARITY, max_value=1.0)
+
+    def get_clusters(self) -> pd.Series:
+        """Extracts cluster labels directly from the pre-computed adjacency network."""
+        _, labels = sp_connected_components(csgraph=self.matrix, directed=False, return_labels=True)
+        return pd.Series(labels, index=self.index, dtype='category').cat.as_ordered()

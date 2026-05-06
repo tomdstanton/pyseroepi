@@ -10,7 +10,8 @@ dependencies = [
     "numpy",
     "scipy",
     "scikit-learn",
-    "pandera"
+    "pandera",
+    "shapely>=2.1.2",
 ]
 
 [project.urls]
@@ -19,16 +20,15 @@ Homepage = "https://github.com/tomdstanton/seroepi"
 
 # THESE ARE FOR END-USERS (Enables: pip install seroepi[plot,models])
 [project.optional-dependencies]
-spatial = ['geopandas']
 models = ["numpyro", "statsmodels", "joblib"]
 client = ["requests", "urllib3"]
 plot = ["plotly>=6.6.0", "kaleido"]
 app = [
-    "seroepi[spatial,models,client,plot]",
+    "seroepi[models,client,plot]",
     "shiny",
     "shinywidgets",
     "shinyswatch",
-    "openai"
+    "google-genai"
 ]
 
 # THESE ARE ONLY FOR YOU (Local development, testing, and docs)

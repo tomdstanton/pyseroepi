@@ -3,8 +3,9 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm, beta, entropy
 from scipy.spatial.distance import pdist, squareform
-from seroepi.estimators._base import (BaseEstimator, PrevalenceEstimates, AlphaDiversityEstimates,
-                                        BetaDiversityEstimates)
+
+from seroepi.estimators._base import BaseEstimator, PrevalenceEstimates, AlphaDiversityEstimates, BetaDiversityEstimates
+from seroepi.constants import AggregationType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
@@ -15,16 +16,20 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
     def __init__(self, method: Method = 'wilson', alpha: float = 0.05):
         self.method = method.lower()
         self._method_label = f"frequentist_{self.method}"
-        self._method_func = self._METHODS.get(self.method, None)
+        self._method_func = _FREQUENTIST_KERNELS.get(self.method, None)
         if self._method_func is None:
             raise ValueError(f"Unknown method: {self.method}. "
-                             f"Choose from: {list(self._METHODS.keys())}")
+                             f"Choose from: {list(_FREQUENTIST_KERNELS.keys())}")
         self.alpha = alpha
+
+    def get_params(self) -> dict:
+        """Returns parameters for cloning compatibility during Cross-Validation."""
+        return {'method': self.method, 'alpha': self.alpha}
 
     def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
         """Expects the output of df.epi.aggregate_prevalence()"""
 
-        stratified_by, meta = self._extract_strata(agg_df, exclude_cols=['event', 'n'])
+        stratified_by, meta = self._extract_strata(agg_df, exclude_cols=['event', 'n', 'trait'])
 
         # Extract vectors for fast numpy math
         counts = agg_df['event'].values
@@ -34,10 +39,9 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
         prop, lower, upper = self._method_func(counts, denominators, self.alpha)
 
         new_cols = {
-            'estimate': prop,
-            'lower': lower,
-            'upper': upper,
-            'method': self._method_label
+            'estimate': np.nan_to_num(prop, nan=0.0),
+            'lower': np.nan_to_num(lower, nan=0.0),
+            'upper': np.nan_to_num(upper, nan=0.0)
         }
 
         # 2. Fast horizontal concatenation (ignores the deep copy overhead)
@@ -48,69 +52,9 @@ class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
             stratified_by=stratified_by,
             adjusted_for=meta.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            aggregation_type=meta.get("type", "unknown"),
-            target=meta.get("target", "unknown")
+            aggregation_type=meta.get("aggregation_type", AggregationType.TRAIT),
+            trait=meta.get("trait", "unknown")
         )
-
-    # --- Statistical Methods ---
-
-    @staticmethod
-    def _wald_interval(x: np.ndarray, n: np.ndarray, alpha: float):
-        """The standard textbook method. Terrible for zero counts."""
-        p = x / n
-        z = norm.ppf(1 - alpha / 2)
-        margin = z * np.sqrt(p * (1 - p) / n)
-        return p, np.clip(p - margin, 0, 1), np.clip(p + margin, 0, 1)
-
-    @staticmethod
-    def _wilson_score_interval(x: np.ndarray, n: np.ndarray, alpha: float):
-        """Robust for small sample sizes and zero events."""
-        p = x / n
-        z = norm.ppf(1 - alpha / 2)
-        z2 = z ** 2
-        center = (x + z2 / 2) / (n + z2)
-        margin = (z / (n + z2)) * np.sqrt((p * (1 - p) * n) + (z2 / 4))
-        return p, np.clip(center - margin, 0, 1), np.clip(center + margin, 0, 1)
-
-    @staticmethod
-    def _agresti_coull_interval(x: np.ndarray, n: np.ndarray, alpha: float):
-        """Adds z^2/2 successes and z^2 failures. Great alternative to Wilson."""
-        p_raw = x / n
-        z = norm.ppf(1 - alpha / 2)
-        z2 = z ** 2
-        n_tilde = n + z2
-        p_tilde = (x + z2 / 2) / n_tilde
-        margin = z * np.sqrt(p_tilde * (1 - p_tilde) / n_tilde)
-        # Note: the estimate returned is still the raw proportion
-        return p_raw, np.clip(p_tilde - margin, 0, 1), np.clip(p_tilde + margin, 0, 1)
-
-    @staticmethod
-    def _clopper_pearson_interval(x: np.ndarray, n: np.ndarray, alpha: float):
-        """The 'Exact' binomial interval using the Beta distribution."""
-        p = x / n
-        # Lower bound: 0 if x=0, else beta.ppf(alpha/2, x, n-x+1)
-        lower = np.where(x == 0, 0.0, beta.ppf(alpha / 2, x, n - x + 1))
-        # Upper bound: 1 if x=n, else beta.ppf(1-alpha/2, x+1, n-x)
-        upper = np.where(x == n, 1.0, beta.ppf(1 - alpha / 2, x + 1, n - x))
-        return p, lower, upper
-
-    @staticmethod
-    def _jeffreys_interval(x: np.ndarray, n: np.ndarray, alpha: float):
-        """Bayesian-flavored interval using the Jeffreys prior Beta(0.5, 0.5)."""
-        p = x / n
-        # Lower bound: 0 if x=0
-        lower = np.where(x == 0, 0.0, beta.ppf(alpha / 2, x + 0.5, n - x + 0.5))
-        # Upper bound: 1 if x=n
-        upper = np.where(x == n, 1.0, beta.ppf(1 - alpha / 2, x + 0.5, n - x + 0.5))
-        return p, lower, upper
-
-    _METHODS = {
-        'wilson': _wilson_score_interval,
-        'wald': _wald_interval,
-        'agresti_coull': _agresti_coull_interval,
-        'clopper_pearson': _clopper_pearson_interval,
-        'jeffreys': _jeffreys_interval
-    }
 
 
 class AlphaDiversityEstimator(BaseEstimator[AlphaDiversityEstimates]):
@@ -121,10 +65,14 @@ class AlphaDiversityEstimator(BaseEstimator[AlphaDiversityEstimates]):
         self.metrics = metrics or self._DEFAULT_METRICS
         self._method_label = "alpha_diversity"
 
+    def get_params(self) -> dict:
+        """Returns parameters for cloning compatibility."""
+        return {'target': self.target, 'metrics': self.metrics}
+
     def calculate(self, div_df: pd.DataFrame) -> AlphaDiversityEstimates:
         # Extract the metadata attached by the accessor
-        meta = div_df.attrs.get("diversity_meta", {})
-        target_col = meta.get("target", self.target)
+        meta = div_df.attrs.get("metric_meta", {})
+        target_col = meta.get("trait", self.target)
         strata = meta.get("stratified_by", [])
 
         if not target_col:
@@ -166,7 +114,8 @@ class AlphaDiversityEstimator(BaseEstimator[AlphaDiversityEstimates]):
             data=res_df,
             stratified_by=strata,
             adjusted_for=meta.get("adjusted_for", 'unknown'),
-            target=target_col,
+            trait=target_col,
+            aggregation_type=meta.get("aggregation_type", AggregationType.TRAIT),
             metrics=self.metrics
         )
 
@@ -181,10 +130,14 @@ class BetaDiversityEstimator(BaseEstimator[BetaDiversityEstimates]):
         self.metric = metric
         self._method_label = f"beta_diversity_{self.metric}"
 
+    def get_params(self) -> dict:
+        """Returns parameters for cloning compatibility."""
+        return {'target': self.target, 'metric': self.metric}
+
     def calculate(self, div_df: pd.DataFrame) -> BetaDiversityEstimates:
         # 1. Extract metadata from the accessor
-        meta = div_df.attrs.get("diversity_meta", {})
-        target_col = meta.get("target", self.target)
+        meta = div_df.attrs.get("metric_meta", {})
+        target_col = meta.get("trait", self.target)
         strata = meta.get("stratified_by", [])
 
         if not target_col:
@@ -196,7 +149,7 @@ class BetaDiversityEstimator(BaseEstimator[BetaDiversityEstimates]):
         # Rows = Strata (e.g., Hospitals), Columns = Variants (e.g., K_loci), Values = Counts
         pivot_df = div_df.pivot_table(
             index=strata,
-            columns=target_col,
+            columns='trait',
             values='variant_count',
             fill_value=0,  # CRITICAL: Missing variants in a group must be explicitly 0
             aggfunc='sum'
@@ -206,6 +159,9 @@ class BetaDiversityEstimator(BaseEstimator[BetaDiversityEstimates]):
         # pdist calculates the condensed distance vector, squareform turns it into an NxN matrix
         distances = pdist(pivot_df.values, metric=self.metric)
         dist_matrix = squareform(distances)
+
+        # Sanitize any NaNs generated by distance metrics on empty strata
+        dist_matrix = np.nan_to_num(dist_matrix, nan=0.0)
 
         # 4. Format the row/column names for the UI
         # If stratified by multiple columns (e.g., ['Region', 'Year']), we flatten the tuple for display
@@ -225,6 +181,66 @@ class BetaDiversityEstimator(BaseEstimator[BetaDiversityEstimates]):
             data=result_matrix,
             stratified_by=strata,
             adjusted_for=meta.get("adjusted_for", 'unknown'),
-            target=target_col,
+            trait=target_col,
+            aggregation_type=meta.get("aggregation_type", AggregationType.TRAIT),
             metric=self.metric
         )
+
+
+# Kernels --------------------------------------------------------------------------------------------------------------
+def _wald_interval(x: np.ndarray, n: np.ndarray, alpha: float):
+    """The standard textbook method. Terrible for zero counts."""
+    p = x / n
+    z = norm.ppf(1 - alpha / 2)
+    margin = z * np.sqrt(p * (1 - p) / n)
+    return p, np.clip(p - margin, 0, 1), np.clip(p + margin, 0, 1)
+
+
+def _wilson_score_interval(x: np.ndarray, n: np.ndarray, alpha: float):
+    """Robust for small sample sizes and zero events."""
+    p = x / n
+    z = norm.ppf(1 - alpha / 2)
+    z2 = z ** 2
+    center = (x + z2 / 2) / (n + z2)
+    margin = (z / (n + z2)) * np.sqrt((p * (1 - p) * n) + (z2 / 4))
+    return p, np.clip(center - margin, 0, 1), np.clip(center + margin, 0, 1)
+
+
+def _agresti_coull_interval(x: np.ndarray, n: np.ndarray, alpha: float):
+    """Adds z^2/2 successes and z^2 failures. Great alternative to Wilson."""
+    p_raw = x / n
+    z = norm.ppf(1 - alpha / 2)
+    z2 = z ** 2
+    n_tilde = n + z2
+    p_tilde = (x + z2 / 2) / n_tilde
+    margin = z * np.sqrt(p_tilde * (1 - p_tilde) / n_tilde)
+    # Note: the estimate returned is still the raw proportion
+    return p_raw, np.clip(p_tilde - margin, 0, 1), np.clip(p_tilde + margin, 0, 1)
+
+
+def _clopper_pearson_interval(x: np.ndarray, n: np.ndarray, alpha: float):
+    """The 'Exact' binomial interval using the Beta distribution."""
+    p = x / n
+    # Lower bound: 0 if x=0, else beta.ppf(alpha/2, x, n-x+1)
+    lower = np.where(x == 0, 0.0, beta.ppf(alpha / 2, x, n - x + 1))
+    # Upper bound: 1 if x=n, else beta.ppf(1-alpha/2, x+1, n-x)
+    upper = np.where(x == n, 1.0, beta.ppf(1 - alpha / 2, x + 1, n - x))
+    return p, lower, upper
+
+
+def _jeffreys_interval(x: np.ndarray, n: np.ndarray, alpha: float):
+    """Bayesian-flavored interval using the Jeffreys prior Beta(0.5, 0.5)."""
+    p = x / n
+    # Lower bound: 0 if x=0
+    lower = np.where(x == 0, 0.0, beta.ppf(alpha / 2, x + 0.5, n - x + 0.5))
+    # Upper bound: 1 if x=n
+    upper = np.where(x == n, 1.0, beta.ppf(1 - alpha / 2, x + 0.5, n - x + 0.5))
+    return p, lower, upper
+
+_FREQUENTIST_KERNELS = {
+    'wilson': _wilson_score_interval,
+    'wald': _wald_interval,
+    'agresti_coull': _agresti_coull_interval,
+    'clopper_pearson': _clopper_pearson_interval,
+    'jeffreys': _jeffreys_interval
+}

@@ -2,15 +2,16 @@
 Module to handle epidemiological, geospatial and genotypic operations on isolate datasets in the form of Pandas
 DataFrames.
 """
-
-from typing import Union, Literal
-import numpy as np
+from pathlib import Path
+from typing import Union
 import pandas as pd
-from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import connected_components
-from sklearn.neighbors import BallTree
+import numpy as np
+import json
+from shapely import from_geojson, points
+from shapely.strtree import STRtree
 from seroepi.data.gazetteer_data import GAZETTEER_DICT
-from seroepi.constants import MetricType, TimeResolution, GeoResolution
+from seroepi.constants import MetricType, TemporalResolution, SpatialResolution, AggregationType, Domain
+from seroepi.dist import TransmissionDistances
 
 
 # Accessors ------------------------------------------------------------------------------------------------------------
@@ -19,116 +20,152 @@ class GeoAccessor:
     """
     Pandas accessor for geographical operations on isolate datasets.
 
-    Provides methods for standardizing country names, imputing missing
+    Provides methods for standardizing location names, imputing missing
     coordinates using a gazetteer, and performing reverse geocoding.
 
     Attributes:
         gazetteer (pd.DataFrame): A DataFrame containing centroid coordinates and
             metadata for countries.
-
-    Examples:
-        >>> import pandas as pd
-        >>> import seroepi.accessors
-        >>> df = pd.DataFrame({'country': ['Australia', 'United Kingdom']})
-        >>> df = df.geo.standardize_and_impute()
-        >>> print(df[['latitude', 'longitude']])
     """
-    def __init__(self, pandas_obj):
+    
+    # Class-level cache to prevent expensive dataframe recreation on every accessor call
+    _gazetteer_df = None
+    
+    def __init__(self, pandas_obj: pd.DataFrame):
         self._obj = pandas_obj
-        self._gazetteer = pd.DataFrame.from_dict(GAZETTEER_DICT, orient='index')
 
     @property
-    def gazetteer(self):
+    def gazetteer(self) -> pd.DataFrame:
         """Returns the internal gazetteer used for coordinate imputation."""
-        return self._gazetteer
+        if GeoAccessor._gazetteer_df is None:
+            GeoAccessor._gazetteer_df = pd.DataFrame.from_dict(GAZETTEER_DICT, orient='index')
+        return GeoAccessor._gazetteer_df
 
-    def standardize_and_impute(self) -> pd.DataFrame:
+    @property
+    def spatial(self) -> pd.DataFrame:
+        """Returns a DataFrame of all spatial columns, with the prefix removed."""
+        return self._obj.filter(regex=f"^{Domain.SPATIAL.value}_(?!res_)").rename(columns=lambda c: c.replace(f'{Domain.SPATIAL.value}_', '', 1))
+
+    @property
+    def spatial_resolution(self) -> pd.DataFrame:
+        """Returns a DataFrame of all spatial resolution columns."""
+        return self._obj.filter(regex=f"^{Domain.SPATIAL_RES.value}_").rename(columns=lambda c: c.replace(f'{Domain.SPATIAL_RES.value}_', '', 1))
+
+    def standardize_and_impute(self, spatial_col: str = None) -> pd.DataFrame:
         """
-        Standardizes country names and imputes missing coordinates.
+        Standardizes spatial names and imputes missing coordinates.
 
         Uses the internal gazetteer to find centroids for countries when exact
         latitude and longitude are missing.
+        
+        Args:
+            spatial_col: Optional specific spatial column to impute by. Defaults to the first mapped spatial column.
 
         Returns:
             A new DataFrame with imputed coordinates and spatial resolution metadata.
         """
         df = self._obj.copy()
         ref_data = self.gazetteer
+        
+        spatial_cols = df.filter(regex=f"^{Domain.SPATIAL.value}_(?!res_)").columns.tolist()
+        if not spatial_cols:
+            return df
+            
+        if spatial_col is None:
+            spatial_col = spatial_cols[0]
+        elif spatial_col not in df.columns and f"{Domain.SPATIAL.value}_{spatial_col}" in df.columns:
+            spatial_col = f"{Domain.SPATIAL.value}_{spatial_col}"
+            
+        res_col = spatial_col.replace(f"{Domain.SPATIAL.value}_", f"{Domain.SPATIAL_RES.value}_")
 
-        # 1. Initialize tracking
-        if 'spatial_resolution' not in df.columns:
-            df['spatial_resolution'] = GeoResolution.UNKNOWN.value
+        # Initialize tracking
+        if res_col not in df.columns:
+            df[res_col] = SpatialResolution.UNKNOWN.value
 
-        # If it's a category, we need to ensure 'exact' and 'country' are in the categories before assigning
-        if isinstance(df['spatial_resolution'].dtype, pd.CategoricalDtype):
-            df['spatial_resolution'] = df['spatial_resolution'].cat.add_categories([GeoResolution.EXACT.value, GeoResolution.COUNTRY.value])
+        # If it's a category, we need to ensure all possible enum values are in the categories before assigning
+        if isinstance(df[res_col].dtype, pd.CategoricalDtype):
+            missing_cats = [c for c in SpatialResolution.choices() if c not in df[res_col].cat.categories]
+            if missing_cats:
+                df[res_col] = df[res_col].cat.add_categories(missing_cats)
 
         exact_mask = df['latitude'].notna() & df['longitude'].notna()
-        df.loc[exact_mask, 'spatial_resolution'] = GeoResolution.EXACT.value
+        df.loc[exact_mask, res_col] = SpatialResolution.EXACT.value
 
-        # 2. Impute using the instant dictionary-backed dataframe
-        if 'country' in df.columns:
-            clean_countries = df['country'].str.strip()  # Natural Earth doesn't use title case
-            needs_imputation = (~exact_mask) & clean_countries.notna()
+        # Impute using the instant dictionary-backed dataframe
+        clean_spatial = df[spatial_col].str.strip()
+        needs_imputation = (~exact_mask) & clean_spatial.notna()
 
-            # The .map() function looks up the clean_countries strings against
-            # the index of ref_data in a fraction of a millisecond
-            df.loc[needs_imputation, 'latitude'] = clean_countries.map(ref_data['centroid_lat'])
-            df.loc[needs_imputation, 'longitude'] = clean_countries.map(ref_data['centroid_lon'])
+        # OPTIMIZATION: Only map the rows that actually need imputation
+        impute_spatial = clean_spatial[needs_imputation]
+        df.loc[needs_imputation, 'latitude'] = impute_spatial.map(ref_data['centroid_lat'])
+        df.loc[needs_imputation, 'longitude'] = impute_spatial.map(ref_data['centroid_lon'])
 
-            imputed_mask = needs_imputation & df['latitude'].notna()
-            df.loc[imputed_mask, 'spatial_resolution'] = GeoResolution.COUNTRY.value
-
-            if 'iso3' not in df.columns or df['iso3'].isna().all():
-                df['iso3'] = clean_countries.map(ref_data['iso3'])
-            if 'region' not in df.columns or df['region'].isna().all():
-                df['region'] = clean_countries.map(ref_data['region'])
+        imputed_mask = needs_imputation & df['latitude'].notna()
+        df.loc[imputed_mask, res_col] = clean_spatial[imputed_mask].map(ref_data['spatial_resolution'])
 
         # Remove unused categories if it was a CategoricalDtype
-        if isinstance(df['spatial_resolution'].dtype, pd.CategoricalDtype):
-             df['spatial_resolution'] = df['spatial_resolution'].cat.remove_unused_categories()
+        if isinstance(df[res_col].dtype, pd.CategoricalDtype):
+             df[res_col] = df[res_col].cat.remove_unused_categories()
 
         return df
 
-    def reverse_geocode(self, shapefile_path: str) -> pd.DataFrame:
+    def reverse_geocode(self, geojson_path: Union[str, Path] = None, target_spatial_name: str = 'Country') -> pd.DataFrame:
         """
-        Performs reverse geocoding to determine country/region from coordinates.
-
-        Requires Geopandas to be installed (`pip install seroepi[spatial]`).
+        Performs reverse geocoding to determine spatial locality from coordinates.
 
         Args:
-            shapefile_path: Path to the shapefile containing boundary polygons.
+            geojson_path: Optional path to a GeoJSON file containing boundary polygons.
+                Defaults to the built-in world_boundaries.geojson.
+            target_spatial_name: The name to append to the spatial domain prefix.
 
         Returns:
-            A new DataFrame with updated 'country' information.
-
-        Raises:
-            ImportError: If geopandas is not installed.
+            A new DataFrame with updated 'spatial' information.
         """
-        try:
-            import geopandas as gpd
-        except ImportError:
-            raise ImportError("geopandas is required for reverse geocoding. Install with seroepi[spatial]")
+        if geojson_path is None:
+            geojson_path = Path(__file__).parent / "data" / "world_boundaries.geojson"
+            
+        if not Path(geojson_path).exists():
+            return self._obj.copy()
+
+        with open(geojson_path, 'r', encoding='utf-8') as f:
+            feature_collection = json.load(f)
+
+        features = [f for f in feature_collection.get('features', []) if f.get('geometry')]
+        
+        # 1. Fast C-level GeoJSON geometry parsing
+        geom_strings = [json.dumps(f['geometry']) for f in features]
+        polygons = from_geojson(geom_strings)
+        country_names = np.array([f['properties'].get('ADMIN', 'Unknown') for f in features])
 
         df = self._obj.copy()
         exact_mask = df['latitude'].notna() & df['longitude'].notna()
 
-        # Convert our standard Pandas dataframe to a GeoDataFrame (Points)
-        gdf_points = gpd.GeoDataFrame(
-            df[exact_mask],
-            geometry=gpd.points_from_xy(df.loc[exact_mask, 'longitude'], df.loc[exact_mask, 'latitude']),
-            crs="EPSG:4326"  # Standard GPS coordinates
-        )
+        if not exact_mask.any():
+            return df
 
-        # Load the boundary polygons (e.g., WHO regions or Country borders)
-        gdf_polygons = gpd.read_file(shapefile_path)
+        # OPTIMIZATION: Reverse geocode unique coordinates using an STRtree Spatial Index
+        unique_coords = df.loc[exact_mask, ['latitude', 'longitude']].drop_duplicates()
+        
+        # 2. Vectorized Point creation (astype(float) prevents Pandas Float64 extension errors)
+        pts = points(unique_coords['longitude'].astype(float).values, unique_coords['latitude'].astype(float).values)
 
-        # The Spatial Join (Finds which polygon each point intersects)
-        joined = gpd.sjoin(gdf_points, gdf_polygons, how="left", predicate="intersects")
+        # 3. R-Tree spatial index for lightning-fast Point-in-Polygon queries
+        tree = STRtree(polygons)
+        pt_idx, poly_idx = tree.query(pts, predicate='intersects')
 
-        # Map the found regions back to the main dataframe
-        df.loc[exact_mask, 'country'] = joined['country_name_from_shapefile']
+        # 4. Resolve border overlaps by keeping the first matched polygon per point
+        unique_pt_idx, unique_indices = np.unique(pt_idx, return_index=True)
+        
+        # Map back the names
+        country_results = np.full(len(unique_coords), pd.NA, dtype=object)
+        country_results[unique_pt_idx] = country_names[poly_idx[unique_indices]]
+        unique_coords['country_name'] = country_results
 
+        # Merge back into the main DataFrame
+        df = df.merge(unique_coords, on=['latitude', 'longitude'], how='left')
+        
+        new_col = f"{Domain.SPATIAL.value}_{target_spatial_name}"
+        res_col = f"{Domain.SPATIAL_RES.value}_{target_spatial_name}"
         return df
 
 
@@ -139,26 +176,17 @@ class EpiAccessor:
 
     Provides methods for generating epidemic curves, calculating prevalence,
     diversity, and incidence, and identifying transmission clusters.
-
-    Examples:
-        >>> import pandas as pd
-        >>> import seroepi.accessors
-        >>> df = pd.DataFrame({
-        ...     'date': pd.to_datetime(['2023-01-01', '2023-01-15']),
-        ...     'K_locus': ['KL1', 'KL2']
-        ... })
-        >>> curve = df.epi.epidemic_curve(freq='ME')
     """
-    def __init__(self, pandas_obj):
+    def __init__(self, pandas_obj: pd.DataFrame):
         self._obj = pandas_obj
 
     # --- Shiny UI State Checkers ---
 
     @property
     def has_temporal(self) -> bool:
-        """Checks if the dataset contains valid temporal data (the 'date' column)."""
-        # Checks if 'date' exists AND actually has non-null data
-        return 'date' in self._obj.columns and self._obj['date'].notna().any()
+        """Checks if the dataset contains valid temporal data (any 'temporal_' column)."""
+        cols = self._obj.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").columns
+        return bool(len(cols) > 0 and self._obj[cols[0]].notna().any())
 
     @property
     def has_spatial(self) -> bool:
@@ -168,16 +196,18 @@ class EpiAccessor:
     # --- Spatiotemporal Helpers ---
 
     @property
-    def temporal(self) -> pd.Series:
+    def temporal(self) -> pd.DataFrame:
         """
-        Returns the primary isolation date series.
-
-        Raises:
-            ValueError: If the 'date' column is missing or empty.
+        Returns a DataFrame of all temporal columns, with the prefix removed.
         """
-        if not self.has_temporal:
-            raise ValueError("Temporal column 'date' is missing or completely empty.")
-        return self._obj['date']
+        return self._obj.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").rename(columns=lambda c: c.replace(f'{Domain.TEMPORAL.value}_', '', 1))
+        
+    @property
+    def temporal_resolution(self) -> pd.DataFrame:
+        """
+        Returns a DataFrame of all temporal resolution columns.
+        """
+        return self._obj.filter(regex=f"^{Domain.TEMPORAL_RES.value}_").rename(columns=lambda c: c.replace(f'{Domain.TEMPORAL_RES.value}_', '', 1))
 
     @property
     def spatial(self) -> pd.DataFrame:
@@ -193,7 +223,29 @@ class EpiAccessor:
 
     # --- Time Series / Epidemic Curve Methods ---
 
-    def epidemic_curve(self, freq: Union[str, TimeResolution] = TimeResolution.WEEK, stratify_by: str = None) -> pd.DataFrame:
+    def _get_spatiotemporal_arrays(self, temporal_col: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Helper to extract and format coordinates and dates for spatial clustering."""
+        df = self._obj
+        
+        if not pd.api.types.is_datetime64_any_dtype(df[temporal_col]):
+            raise TypeError(f"Temporal column '{temporal_col}' must be a datetime type. Ensure data is parsed via seroepi.io.")
+            
+        # Schema guarantees datetime64, so we just safely strip timezones if present
+        date_series = df[temporal_col].dt.tz_localize(None)
+        # Coerce coordinates to standard numpy floats
+        coords = np.radians(df[['latitude', 'longitude']].astype(float).values)
+        
+        # Convert dates to raw days (use float to allow NaNs for missing dates)
+        raw_dates = np.full(len(df), np.nan)
+        date_mask = date_series.notna().values
+        raw_dates[date_mask] = date_series[date_mask].values.astype('datetime64[D]').astype(float)
+        
+        # Create a boolean mask of rows that have all required spatiotemporal data
+        valid_mask = ~(np.isnan(coords[:, 0]) | np.isnan(coords[:, 1]) | np.isnan(raw_dates))
+        return coords, raw_dates, valid_mask
+
+    def epidemic_curve(self, freq: Union[str, TemporalResolution] = TemporalResolution.WEEK,
+                       stratify_by: str = None, temporal_col: str = None) -> pd.DataFrame:
         """
         Generates a time-series DataFrame for plotting epidemic curves.
 
@@ -213,20 +265,24 @@ class EpiAccessor:
 
         df = self._obj.copy()
         
-        if isinstance(freq, TimeResolution):
+        if isinstance(freq, TemporalResolution):
             freq_val = freq.pandas_offset
         else:
             freq_val = freq
 
-        # We know exactly what the column is called now!
-        if not pd.api.types.is_datetime64_any_dtype(df['date']):
-            df['date'] = pd.to_datetime(df['date'])
+        if temporal_col is None:
+            temporal_col = df.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").columns[0]
+        elif not temporal_col.startswith(f"{Domain.TEMPORAL.value}_"):
+            temporal_col = f"{Domain.TEMPORAL.value}_{temporal_col}"
+
+        if not pd.api.types.is_datetime64_any_dtype(df[temporal_col]):
+            raise TypeError(f"Temporal column '{temporal_col}' must be a datetime type. Ensure data is parsed via seroepi.io.")
 
         # Set time as index for resampling
-        df = df.set_index('date')
+        df = df.set_index(temporal_col)
 
         if stratify_by:
-            curve = df.groupby(stratify_by).resample(freq_val).size().unstack(level=0, fill_value=0)
+            curve = df.groupby(stratify_by, observed=True).resample(freq_val).size().unstack(level=0, fill_value=0)
         else:
             curve = df.resample(freq_val).size().to_frame(name='count')
 
@@ -245,27 +301,61 @@ class EpiAccessor:
     @property
     def genotypes(self) -> list[str]:
         """Compiles a list of all genetic variables (Core + Accessory traits)."""
-        # 1. Grab the core grouping genotypes if they exist
-        core_genos = [col for col in ['ST', 'K_locus', 'O_locus'] if col in self._obj.columns]
-
-        # 2. Grab all the dynamically prefixed traits
-        trait_genos = self._obj.filter(regex="^(amr|vir)_").columns.tolist()
-
-        return core_genos + trait_genos
+        # Grab all the dynamically prefixed traits (genotype, phenotype, amr, virulence)
+        return self._obj.filter(regex=f"^({Domain.GENOTYPE.value}|{Domain.PHENOTYPE.value}|{Domain.AMR.value}|{Domain.VIRULENCE.value})_").columns.tolist()
 
     @property
     def stratify_cols(self) -> list[str]:
         """Returns columns suitable for stratification (excluding QC, metadata, and high-cardinality/internal cols)."""
-        exclude_strat = ['sample_id', 'latitude', 'longitude', 'date_resolution', 'spatial_resolution']
-        return [c for c in self._obj.columns if not c.startswith(('qc_', 'meta_')) and c not in exclude_strat]
+        exclude_strat = ['sample_id', 'latitude', 'longitude']
+        return [c for c in self._obj.columns if not c.startswith((f'{Domain.QC.value}_', 'meta_', f'{Domain.SPATIAL_RES.value}_', f'{Domain.TEMPORAL_RES.value}_')) and c not in exclude_strat]
 
     @property
     def cluster_cols(self) -> list[str]:
         """Returns columns suitable for cluster adjustment (e.g., transmission clusters and ST)."""
-        return [c for c in self._obj.columns if 'cluster' in c.lower() or c in ['ST']]
+        return [c for c in self._obj.columns if c.startswith(f"{Domain.CLUSTER.value}_") or c.endswith('_ST')]
 
+    @staticmethod
+    def _calculate_events_and_denoms(
+        df: pd.DataFrame,
+        trait_col: str,
+        denom_cols: list[str],
+        trait_strata: list[str],
+        cluster_col: str,
+        negative_indicator: Union[str, list[str]],
+        event_name: str,
+        denom_name: str
+    ) -> tuple[Union[pd.Series, int], Union[pd.Series, int]]:
+        """Helper to calculate numerators and denominators for aggregated metrics."""
+        if trait_col:
+            valid_df = df.dropna(subset=[trait_col]).copy()
 
-    def aggregate_prevalence(self, stratify_by: list[str], target_col: str = None,
+            if pd.api.types.is_bool_dtype(valid_df[trait_col]):
+                valid_df['_trait_bool'] = valid_df[trait_col]
+            else:
+                neg_list = [negative_indicator] if isinstance(negative_indicator, str) else negative_indicator
+                valid_df['_trait_bool'] = ~valid_df[trait_col].isin(neg_list)
+
+            if cluster_col:
+                denoms = valid_df.groupby(denom_cols, observed=True)[cluster_col].nunique().rename(denom_name) if denom_cols else valid_df[cluster_col].nunique()
+                events = valid_df[valid_df['_trait_bool']].groupby(trait_strata, observed=True)[cluster_col].nunique().rename(event_name) if trait_strata else valid_df[valid_df['_trait_bool']][cluster_col].nunique()
+            else:
+                denoms = valid_df.groupby(denom_cols, observed=True).size().rename(denom_name) if denom_cols else len(valid_df)
+                events = valid_df.groupby(trait_strata, observed=True)['_trait_bool'].sum().rename(event_name) if trait_strata else valid_df['_trait_bool'].sum()
+
+        else:
+            valid_df = df.dropna(subset=[trait_strata[-1]]).copy()
+
+            if cluster_col:
+                denoms = valid_df.groupby(denom_cols, observed=True)[cluster_col].nunique().rename(denom_name) if denom_cols else valid_df[cluster_col].nunique()
+                events = valid_df.groupby(trait_strata, observed=True)[cluster_col].nunique().rename(event_name)
+            else:
+                denoms = valid_df.groupby(denom_cols, observed=True).size().rename(denom_name) if denom_cols else len(valid_df)
+                events = valid_df.groupby(trait_strata, observed=True).size().rename(event_name)
+
+        return events, denoms
+
+    def aggregate_prevalence(self, stratify_by: list[str], trait_col: str = None,
                              cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
                              pad_zeros: bool = False) -> pd.DataFrame:
         """
@@ -275,8 +365,8 @@ class EpiAccessor:
         compositional prevalence (distribution of variants within a locus).
 
         Args:
-            stratify_by: Columns to group by (e.g., ['country']).
-            target_col: The column containing the trait/marker to measure.
+            stratify_by: Columns to group by (e.g., ['spatial']).
+            trait_col: The column containing the trait/marker to measure.
                 If None, compositional prevalence is calculated for the last
                 column in `stratify_by`.
             cluster_col: Column containing cluster IDs to adjust for (e.g., nosocomial outbreaks).
@@ -294,41 +384,25 @@ class EpiAccessor:
         """
         df = self._obj.copy()
 
-        if target_col:
+        if trait_col:
             denom_cols = stratify_by
-            valid_df = df.dropna(subset=[target_col]).copy()
-
-            if pd.api.types.is_bool_dtype(valid_df[target_col]):
-                valid_df['_target_bool'] = valid_df[target_col]
-            else:
-                neg_list = [negative_indicator] if isinstance(negative_indicator, str) else negative_indicator
-                valid_df['_target_bool'] = ~valid_df[target_col].isin(neg_list)
-
-            if cluster_col:
-                denoms = valid_df.groupby(denom_cols)[cluster_col].nunique().rename('n') if denom_cols else valid_df[
-                    cluster_col].nunique()
-                events = valid_df[valid_df['_target_bool']].groupby(denom_cols)[cluster_col].nunique().rename(
-                    'event') if denom_cols else valid_df[valid_df['_target_bool']][cluster_col].nunique()
-            else:
-                denoms = valid_df.groupby(denom_cols).size().rename('n') if denom_cols else len(valid_df)
-                events = valid_df.groupby(denom_cols)['_target_bool'].sum().rename('event') if denom_cols else valid_df[
-                    '_target_bool'].sum()
-
+            trait_strata = stratify_by
         else:
             if len(stratify_by) < 1:
                 raise ValueError("Compositional prevalence requires at least 1 stratify_by column.")
             denom_cols = stratify_by[:-1]
+            trait_strata = stratify_by
 
-            # Drop true unknowns from the target variant column
-            valid_df = df.dropna(subset=[stratify_by[-1]]).copy()
-
-            if cluster_col:
-                denoms = valid_df.groupby(denom_cols)[cluster_col].nunique().rename('n') if denom_cols else valid_df[
-                    cluster_col].nunique()
-                events = valid_df.groupby(stratify_by)[cluster_col].nunique().rename('event')
-            else:
-                denoms = valid_df.groupby(denom_cols).size().rename('n') if denom_cols else len(valid_df)
-                events = valid_df.groupby(stratify_by).size().rename('event')
+        events, denoms = self._calculate_events_and_denoms(
+            df=df,
+            trait_col=trait_col,
+            denom_cols=denom_cols,
+            trait_strata=trait_strata,
+            cluster_col=cluster_col,
+            negative_indicator=negative_indicator,
+            event_name='event',
+            denom_name='n'
+        )
 
         # Expand Grid
         if len(stratify_by) > 0:
@@ -338,15 +412,13 @@ class EpiAccessor:
                 base_index = pd.MultiIndex.from_product(unique_levels, names=stratify_by)
             else:
                 # Efficiently use only the observed strata combinations
-                base_index = denoms.index if target_col else events.index
+                base_index = denoms.index if trait_col else events.index
 
             agg_df = pd.DataFrame(index=base_index).join(events, how='left').fillna({'event': 0}).reset_index()
 
             # Safely map denominators
             if len(denom_cols) == 0:
                 agg_df['n'] = denoms
-            elif len(denom_cols) == 1:
-                agg_df['n'] = agg_df[denom_cols[0]].map(denoms).fillna(0)
             else:
                 agg_df = agg_df.set_index(denom_cols)
                 agg_df['n'] = denoms
@@ -357,22 +429,25 @@ class EpiAccessor:
         else:
             agg_df = pd.DataFrame({'event': [events], 'n': [denoms]})
 
-        # Re-inject the target column so that plotting methods can reliably find it by name
-        if target_col:
-            agg_df[target_col] = target_col
+        # Standardize the trait column to 'trait' for uniform downstream handling
+        if trait_col:
+            agg_df['trait'] = trait_col
+        else:
+            agg_df = agg_df.rename(columns={stratify_by[-1]: 'trait'})
 
         agg_df.attrs = self._obj.attrs.copy()
         agg_df.attrs['metric_meta'] = {
             "metric_type": MetricType.PREVALENCE,
-            "stratified_by": stratify_by,
-            "target": target_col if target_col else stratify_by[-1],
-            "type": "trait" if target_col else "compositional",
-            "adjusted_for": cluster_col
+            "stratified_by": denom_cols,
+            "trait": trait_col if trait_col else stratify_by[-1],
+            "aggregation_type": AggregationType.TRAIT if trait_col else AggregationType.COMPOSITIONAL,
+            "adjusted_for": cluster_col,
+            "is_zero_padded": pad_zeros
         }
 
         return agg_df
 
-    def aggregate_diversity(self, stratify_by: list[str], target_col: str = None,
+    def aggregate_diversity(self, stratify_by: list[str], trait_col: str = None,
                             cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
                             pad_zeros: bool = False) -> pd.DataFrame:
         """
@@ -380,7 +455,7 @@ class EpiAccessor:
 
         Args:
             stratify_by: Columns to group by.
-            target_col: The locus or trait to measure diversity for.
+            trait_col: The locus or trait to measure diversity for.
             cluster_col: Optional cluster column to adjust for.
             negative_indicator: Value(s) to exclude from diversity counts.
             pad_zeros: If True, pads missing combinations of strata with zero counts.
@@ -394,59 +469,67 @@ class EpiAccessor:
         """
         df = self._obj.copy()
 
-        if target_col:
+        is_trait = True if trait_col else False
+        if trait_col:
             groupers = stratify_by
-            target_strata = stratify_by + [target_col]
-            valid_df = df.dropna(subset=[target_col]).copy()
+            trait_strata = stratify_by + [trait_col]
+            valid_df = df.dropna(subset=[trait_col]).copy()
 
             # For trait diversity, we often want to strip out the "absence" indicators
             # so they don't count as a diversity variant mathematically
-            if not pd.api.types.is_bool_dtype(valid_df[target_col]):
+            if not pd.api.types.is_bool_dtype(valid_df[trait_col]):
                 neg_list = [negative_indicator] if isinstance(negative_indicator, str) else negative_indicator
-                valid_df = valid_df[~valid_df[target_col].isin(neg_list)]
+                valid_df = valid_df[~valid_df[trait_col].isin(neg_list)]
         else:
             if not stratify_by:
                 raise ValueError("Compositional diversity requires at least 1 stratify_by column.")
             groupers = stratify_by[:-1]
-            target_col = stratify_by[-1]
-            target_strata = stratify_by
-            valid_df = df.dropna(subset=[target_col]).copy()
+            trait_col = stratify_by[-1]
+            trait_strata = stratify_by
+            valid_df = df.dropna(subset=[trait_col]).copy()
 
         if cluster_col:
-            div_df = valid_df.groupby(target_strata, observed=True)[cluster_col].nunique().reset_index()
+            div_df = valid_df.groupby(trait_strata, observed=True)[cluster_col].nunique().reset_index()
             div_df = div_df.rename(columns={cluster_col: 'variant_count'})
         else:
-            div_df = valid_df.groupby(target_strata, observed=True).size().reset_index(name='variant_count')
+            div_df = valid_df.groupby(trait_strata, observed=True).size().reset_index(name='variant_count')
 
-        if pad_zeros and target_strata:
-            unique_levels = [df[col].dropna().unique() for col in target_strata]
-            expanded_index = pd.MultiIndex.from_product(unique_levels, names=target_strata)
-            div_df = div_df.set_index(target_strata).reindex(expanded_index, fill_value=0).reset_index()
+        if pad_zeros and trait_strata:
+            unique_levels = [df[col].dropna().unique() for col in trait_strata]
+            expanded_index = pd.MultiIndex.from_product(unique_levels, names=trait_strata)
+            div_df = div_df.set_index(trait_strata).reindex(expanded_index, fill_value=0).reset_index()
 
         if groupers:
             div_df['n_total'] = div_df.groupby(groupers, observed=True)['variant_count'].transform('sum')
         else:
             div_df['n_total'] = div_df['variant_count'].sum()
 
+        # Standardize the trait column to 'trait'
+        div_df = div_df.rename(columns={trait_col: 'trait'})
+        if is_trait:
+            div_df['trait'] = trait_col
+
         div_df.attrs = self._obj.attrs.copy()
-        div_df.attrs["diversity_meta"] = {
+        div_df.attrs["metric_meta"] = {
+            "metric_type": MetricType.DIVERSITY,
             "stratified_by": groupers,
-            "target": target_col,
-            "type": "trait" if target_col else "compositional",
-            "adjusted_for": cluster_col
+            "trait": trait_col,
+            "aggregation_type": AggregationType.TRAIT if trait_col else AggregationType.COMPOSITIONAL,
+            "adjusted_for": cluster_col,
+            "is_zero_padded": pad_zeros
         }
 
         return div_df
 
-    def aggregate_incidence(self, stratify_by: list[str], target_col: str = None, freq: Union[str, TimeResolution] = TimeResolution.MONTH,
+    def aggregate_incidence(self, stratify_by: list[str], trait_col: str = None, freq: Union[str, TemporalResolution] = TemporalResolution.MONTH,
                             cluster_col: str = None, negative_indicator: Union[str, list[str]] = '-',
-                            pad_zeros: bool = False) -> pd.DataFrame:
+                            pad_zeros: bool = False, temporal_col: str = None) -> pd.DataFrame:
         """
         Aggregates data for time-series incidence analysis.
 
         Args:
             stratify_by: Columns to group by.
-            target_col: The marker to measure incidence for.
+            trait_col: The marker to measure incidence for.
             freq: Time frequency for binning (e.g., TimeResolution.MONTH, 'ME'). Defaults to TimeResolution.MONTH.
             cluster_col: Optional cluster column to adjust for.
             negative_indicator: Value(s) representing absence.
@@ -461,11 +544,19 @@ class EpiAccessor:
         """
         df = self._obj.copy()
 
-        if 'date' not in df.columns or not pd.api.types.is_datetime64_any_dtype(df['date']):
-            raise ValueError("Incidence aggregation requires a valid datetime64 'date' column.")
+        if temporal_col is None:
+            temporal_cols = df.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").columns
+            if not len(temporal_cols):
+                raise ValueError("Incidence aggregation requires a valid temporal column.")
+            temporal_col = temporal_cols[0]
+        elif not temporal_col.startswith(f"{Domain.TEMPORAL.value}_"):
+            temporal_col = f"{Domain.TEMPORAL.value}_{temporal_col}"
+
+        if temporal_col not in df.columns or not pd.api.types.is_datetime64_any_dtype(df[temporal_col]):
+            raise ValueError(f"Incidence aggregation requires a valid datetime64 temporal column. '{temporal_col}' invalid.")
 
         # Translate Pandas 2.2+ point offsets ('ME') to period spans ('M')
-        if isinstance(freq, TimeResolution):
+        if isinstance(freq, TemporalResolution):
             period_freq = freq.pandas_period
             stored_freq = freq.value
         else:
@@ -473,41 +564,28 @@ class EpiAccessor:
             stored_freq = freq
 
         # Snap dates to the requested frequency bin using the safe string
-        df['date_bin'] = df['date'].dt.to_period(period_freq).dt.to_timestamp()
+        df['date_bin'] = df[temporal_col].dt.to_period(period_freq).dt.to_timestamp()
 
-        if target_col:
+        if trait_col:
             denom_cols = ['date_bin'] + stratify_by
-            target_strata = ['date_bin'] + stratify_by
-
-            valid_df = df.dropna(subset=[target_col]).copy()
-            if pd.api.types.is_bool_dtype(valid_df[target_col]):
-                valid_df['_target_bool'] = valid_df[target_col]
-            else:
-                neg_list = [negative_indicator] if isinstance(negative_indicator, str) else negative_indicator
-                valid_df['_target_bool'] = ~valid_df[target_col].isin(neg_list)
-
-            if cluster_col:
-                denoms = valid_df.groupby(denom_cols)[cluster_col].nunique().rename('total_sequenced')
-                events = valid_df[valid_df['_target_bool']].groupby(target_strata)[cluster_col].nunique().rename(
-                    'variant_count')
-            else:
-                denoms = valid_df.groupby(denom_cols).size().rename('total_sequenced')
-                events = valid_df.groupby(target_strata)['_target_bool'].sum().rename('variant_count')
-
+            trait_strata = ['date_bin'] + stratify_by
         else:
             if not stratify_by:
                 raise ValueError("Compositional incidence requires at least 1 stratify_by column.")
 
             denom_cols = ['date_bin'] + stratify_by[:-1]
-            target_strata = ['date_bin'] + stratify_by
-            valid_df = df.dropna(subset=[stratify_by[-1]]).copy()
+            trait_strata = ['date_bin'] + stratify_by
 
-            if cluster_col:
-                denoms = valid_df.groupby(denom_cols)[cluster_col].nunique().rename('total_sequenced')
-                events = valid_df.groupby(target_strata)[cluster_col].nunique().rename('variant_count')
-            else:
-                denoms = valid_df.groupby(denom_cols).size().rename('total_sequenced')
-                events = valid_df.groupby(target_strata).size().rename('variant_count')
+        events, denoms = self._calculate_events_and_denoms(
+            df=df,
+            trait_col=trait_col,
+            denom_cols=denom_cols,
+            trait_strata=trait_strata,
+            cluster_col=cluster_col,
+            negative_indicator=negative_indicator,
+            event_name='variant_count',
+            denom_name='total_sequenced'
+        )
 
         # --- TIME GRID EXPANSION ---
         # Generate an unbroken sequence of dates from the earliest to the latest record
@@ -516,58 +594,56 @@ class EpiAccessor:
             min_date) else []
 
         if pad_zeros:
-            unique_levels = [all_dates] + [df[col].dropna().unique() for col in target_strata[1:]]
-            expanded_index = pd.MultiIndex.from_product(unique_levels, names=target_strata)
+            unique_levels = [all_dates] + [df[col].dropna().unique() for col in trait_strata[1:]]
+            expanded_index = pd.MultiIndex.from_product(unique_levels, names=trait_strata)
         else:
-            if len(target_strata) > 1:
+            if len(trait_strata) > 1:
                 # Only use strata combinations that actually appear in the data
-                observed_strata = df[target_strata[1:]].dropna().drop_duplicates()
-                dates_df = pd.DataFrame({target_strata[0]: all_dates})
+                observed_strata = df[trait_strata[1:]].dropna().drop_duplicates()
+                dates_df = pd.DataFrame({trait_strata[0]: all_dates})
                 expanded_df = dates_df.merge(observed_strata, how='cross')
-                expanded_index = pd.MultiIndex.from_frame(expanded_df[target_strata])
+                expanded_index = pd.MultiIndex.from_frame(expanded_df[trait_strata])
             else:
-                expanded_index = pd.Index(all_dates, name=target_strata[0])
+                expanded_index = pd.Index(all_dates, name=trait_strata[0])
 
         inc_df = pd.DataFrame(index=expanded_index).join(events, how='left').fillna({'variant_count': 0}).reset_index()
 
-        if len(denom_cols) == 1:  # Only date_bin exists in the strata
-            inc_df['total_sequenced'] = inc_df['date_bin'].map(denoms).fillna(0)
-        else:
-            inc_df = inc_df.set_index(denom_cols)
-            inc_df['total_sequenced'] = denoms
-            inc_df = inc_df.reset_index().fillna({'total_sequenced': 0})
+        inc_df = inc_df.set_index(denom_cols)
+        inc_df['total_sequenced'] = denoms
+        inc_df = inc_df.reset_index().fillna({'total_sequenced': 0})
 
         # Unlike Prevalence, we do NOT drop rows where total_sequenced == 0.
         # A true 0 sequence volume is critical information for an epicurve gap.
-        inc_df = inc_df.rename(columns={'date_bin': 'date'})
+        inc_df = inc_df.rename(columns={'date_bin': temporal_col})
 
-        # Re-inject the target column for consistent plotting downstream
-        if target_col:
-            inc_df[target_col] = target_col
+        # Standardize the trait column to 'trait'
+        if trait_col:
+            inc_df['trait'] = trait_col
+        else:
+            inc_df = inc_df.rename(columns={stratify_by[-1]: 'trait'})
 
         inc_df.attrs = self._obj.attrs.copy()
         inc_df.attrs['metric_meta'] = {
             "metric_type": MetricType.INCIDENCE,
-            "stratified_by": stratify_by,
-            "target": target_col if target_col else stratify_by[-1],
-            "type": "trait" if target_col else "compositional",
+            "stratified_by": stratify_by if trait_col else stratify_by[:-1],
+            "trait": trait_col if trait_col else stratify_by[-1],
+            "aggregation_type": AggregationType.TRAIT if trait_col else AggregationType.COMPOSITIONAL,
             "freq": stored_freq,
-            "adjusted_for": cluster_col
+            "adjusted_for": cluster_col,
+            "is_zero_padded": pad_zeros
         }
 
         return inc_df
 
-    def transmission_clusters(
+    def transmission_network(
             self,
             clone_col: str,
             spatial_threshold_km: float = 10.0,
-            temporal_threshold_days: int = 20
-    ) -> pd.Series:
+            temporal_threshold_days: int = 20,
+            temporal_col: str = None
+    ) -> TransmissionDistances:
         """
-        Identifies transmission clusters based on spatial and temporal proximity.
-
-        Uses a graph-based connected components approach where isolates of the
-        same clone are linked if they fall within both distance and time thresholds.
+        Builds a sparse adjacency graph of transmission links.
 
         Args:
             clone_col: Column containing clone IDs (e.g., 'ST' or a custom cluster).
@@ -575,7 +651,7 @@ class EpiAccessor:
             temporal_threshold_days: Maximum time difference in days. Defaults to 20.
 
         Returns:
-            A Series with the transmission cluster labels.
+            A TransmissionDistances object representing the outbreak network.
 
         Raises:
             KeyError: If required columns ('latitude', 'longitude', 'date') are missing.
@@ -591,78 +667,63 @@ class EpiAccessor:
             raise KeyError("Spatial clustering requires 'latitude' and 'longitude' columns. "
                            "Ensure geo accessors have parsed coordinates.")
 
-        if 'date' not in df.columns:
-            raise KeyError("A 'date' column is required for temporal clustering.")
+        if temporal_col is None:
+            temporal_cols = df.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").columns
+            if not len(temporal_cols):
+                raise KeyError("A temporal column is required for temporal clustering.")
+            temporal_col = temporal_cols[0]
+        elif not temporal_col.startswith(f"{Domain.TEMPORAL.value}_"):
+            temporal_col = f"{Domain.TEMPORAL.value}_{temporal_col}"
 
-        # Pre-compute data arrays at the DataFrame level to avoid per-group overhead
-        # Drops timezones if present
-        date_series = pd.to_datetime(df['date']).dt.tz_localize(None)
+        if temporal_col not in df.columns:
+            raise KeyError(f"Temporal column '{temporal_col}' not found.")
+
+        df = self._obj
+        coords, raw_dates, _ = self._get_spatiotemporal_arrays(temporal_col)
+
+        return TransmissionDistances.from_spatiotemporal(
+            sample_ids=df['sample_id'],
+            coords=coords,
+            dates=raw_dates,
+            clones=df[clone_col].values,
+            spatial_threshold_km=spatial_threshold_km,
+            temporal_threshold_days=temporal_threshold_days
+        )
+
+    def transmission_clusters(
+            self,
+            clone_col: str,
+            spatial_threshold_km: float = 10.0,
+            temporal_threshold_days: int = 20,
+            temporal_col: str = None,
+            network: TransmissionDistances = None
+    ) -> pd.Series:
+        """Extracts and formats categorical cluster labels from the transmission network."""
+        df = self._obj
         
-        # Coerce coordinates to standard numpy floats to resolve Pandas Float64 extension type issues
-        coords = np.radians(df[['latitude', 'longitude']].astype(float).values)
-        
-        # Convert dates to raw days (use float to allow NaNs for missing dates)
-        raw_dates = np.full(len(df), np.nan)
-        date_mask = date_series.notna().values
-        raw_dates[date_mask] = date_series[date_mask].values.astype('datetime64[D]').astype(float)
-        
-        # Create a boolean mask of rows that have all required spatiotemporal data
-        valid_mask = ~(np.isnan(coords[:, 0]) | np.isnan(coords[:, 1]) | np.isnan(raw_dates))
+        if temporal_col is None:
+            temporal_cols = df.filter(regex=f"^{Domain.TEMPORAL.value}_(?!res_)").columns
+            if not len(temporal_cols):
+                raise KeyError("A temporal column is required for temporal clustering.")
+            temporal_col = temporal_cols[0]
+        elif not temporal_col.startswith(f"{Domain.TEMPORAL.value}_"):
+            temporal_col = f"{Domain.TEMPORAL.value}_{temporal_col}"
 
-        # Initialize an array to hold the global cluster IDs
-        cluster_labels = np.full(len(df), -1)
-        current_cluster_id = 0
+        if network is None:
+            network = self.transmission_network(clone_col, spatial_threshold_km, temporal_threshold_days, temporal_col)
 
-        # 2. Iterate and Cluster by Clone
-        for clone_id, indices in df.groupby(clone_col, dropna=True).indices.items():
-            # Filter the group's indices to only those with valid spatiotemporal data
-            valid_indices = indices[valid_mask[indices]]
-            n_points = len(valid_indices)
+        labels = network.get_clusters()
 
-            # If the clone only appears once (or zero times), it is its own isolated cluster
-            if n_points == 0:
-                continue
-            if n_points == 1:
-                cluster_labels[valid_indices] = current_cluster_id
-                current_cluster_id += 1
-                continue
+        _, _, valid_mask = self._get_spatiotemporal_arrays(temporal_col)
+        clone_mask = df[clone_col].notna().values
 
-            # --- A. Spatial Radius Search (O(N log N)) ---
-            group_coords = coords[valid_indices]
-            group_dates = raw_dates[valid_indices]
-            
-            # Build a BallTree for fast spatial querying. Radius must be converted to radians.
-            tree = BallTree(group_coords, metric='haversine')
-            radius_radians = spatial_threshold_km / 6371.0
-            spatial_neighbors = tree.query_radius(group_coords, r=radius_radians)
+        labels_array = labels.astype(float).to_numpy(copy=True)
+        labels_array[~valid_mask] = np.nan
+        labels_array[~clone_mask] = np.nan
 
-            # --- B. Temporal Filter & Graph Construction ---
-            row_ind = []
-            col_ind = []
-            
-            for i, neighbors in enumerate(spatial_neighbors):
-                # Filter spatial neighbors to those that ALSO meet the temporal threshold
-                time_diffs = np.abs(group_dates[i] - group_dates[neighbors])
-                valid_neighbors = neighbors[time_diffs <= temporal_threshold_days]
-                
-                row_ind.extend([i] * len(valid_neighbors))
-                col_ind.extend(valid_neighbors)
-
-            # --- C. Extract Transmission Chains ---
-            # Construct a sparse adjacency matrix directly from the valid pairs
-            data = np.ones(len(row_ind), dtype=bool)
-            graph = csr_matrix((data, (row_ind, col_ind)), shape=(n_points, n_points))
-            
-            n_components, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
-
-            # Offset the local labels by the global counter to ensure unique IDs across all clones
-            cluster_labels[valid_indices] = labels + current_cluster_id
-            current_cluster_id += n_components
-
-        # 3. Cleanup and Formatting
-        res = pd.Series(cluster_labels, index=df.index, dtype="Int64",
-                        name=f'transmission_cluster_{spatial_threshold_km=}_{temporal_threshold_days=}')
-        return res.replace(-1, pd.NA).astype("category")
+        res = pd.Series(labels_array, index=df.index, dtype="Int64",
+                        name=f'{Domain.CLUSTER.value}_transmission_{spatial_threshold_km}km_{temporal_threshold_days}days')
+        return res.astype("category").cat.as_ordered()
 
 
 @pd.api.extensions.register_dataframe_accessor("geno")
@@ -679,74 +740,86 @@ class GenoAccessor:
         >>> df = pd.DataFrame({'amr_blaKPC': [True, False], 'vir_ybt': [True, True]})
         >>> amr_matrix = df.geno.amr
     """
-    def __init__(self, pandas_obj):
+    def __init__(self, pandas_obj: pd.DataFrame):
         self._obj = pandas_obj
 
     @property
+    def genotype(self) -> pd.DataFrame:
+        """Returns the Core Genotype matrix with the prefix removed from names."""
+        return self._obj.filter(regex=f"^{Domain.GENOTYPE.value}_").rename(columns=lambda c: c.replace(f'{Domain.GENOTYPE.value}_', '', 1))
+
+    @property
+    def phenotype(self) -> pd.DataFrame:
+        """Returns the Phenotype matrix with the prefix removed from names."""
+        return self._obj.filter(regex=f"^{Domain.PHENOTYPE.value}_").rename(columns=lambda c: c.replace(f'{Domain.PHENOTYPE.value}_', '', 1))
+
+    @property
     def amr(self) -> pd.DataFrame:
-        """Returns the AMR determinant matrix with 'amr_' prefix removed from names."""
-        return self._obj.filter(regex="^amr_").rename(columns=lambda c: c.replace('amr_', '', 1))
+        """Returns the AMR determinant matrix with the prefix removed from names."""
+        return self._obj.filter(regex=f"^{Domain.AMR.value}_").rename(columns=lambda c: c.replace(f'{Domain.AMR.value}_', '', 1))
 
     @property
     def virulence(self) -> pd.DataFrame:
-        """Returns the Virulence marker matrix with 'vir_' prefix removed from names."""
-        return self._obj.filter(regex="^vir_").rename(columns=lambda c: c.replace('vir_', '', 1))
+        """Returns the Virulence marker matrix with the prefix removed from names."""
+        return self._obj.filter(regex=f"^{Domain.VIRULENCE.value}_").rename(columns=lambda c: c.replace(f'{Domain.VIRULENCE.value}_', '', 1))
 
-    def has_any(self, traits: list[str], domain: str = 'amr') -> pd.Series:
+    def has_any(self, traits: list[str], domain: Union[str, Domain] = Domain.AMR) -> pd.Series:
         """
-        Checks if isolates possess ANY of the target traits.
+        Checks if isolates possess ANY of the specified traits.
 
         Args:
             traits: List of trait names (without prefix).
-            domain: The domain prefix ('amr', 'vir', etc.). Defaults to 'amr'.
+            domain: The domain prefix (e.g., Domain.AMR, Domain.VIRULENCE). Defaults to Domain.AMR.
 
         Returns:
-            A boolean Series indicating presence of any target trait.
+            A boolean Series indicating presence of any specified trait.
         """
+        domain_val = domain.value if isinstance(domain, Domain) else domain
         # Safely prepend the prefix and check if the columns actually exist
-        target_cols = [f"{domain}_{t}" for t in traits if f"{domain}_{t}" in self._obj.columns]
+        trait_cols = [f"{domain_val}_{t}" for t in traits if f"{domain_val}_{t}" in self._obj.columns]
 
-        if not target_cols:
+        if not trait_cols:
             # If none of the genes exist in the dataset, no isolate has them
             return pd.Series(False, index=self._obj.index)
 
         # Pandas matrix math: Check across the columns (axis=1) for any True values
-        return self._obj[target_cols].any(axis=1)
+        return self._obj[trait_cols].any(axis=1)
 
-    def has_all(self, traits: list[str], domain: str = 'vir') -> pd.Series:
+    def has_all(self, traits: list[str], domain: Union[str, Domain] = Domain.VIRULENCE) -> pd.Series:
         """
-        Checks if isolates possess ALL of the target traits.
+        Checks if isolates possess ALL of the specified traits.
 
         Args:
             traits: List of trait names.
-            domain: Domain prefix. Defaults to 'vir'.
+            domain: Domain prefix (e.g., Domain.VIRULENCE). Defaults to Domain.VIRULENCE.
 
         Returns:
             A boolean Series.
         """
-        target_cols = [f"{domain}_{t}" for t in traits]
+        domain_val = domain.value if isinstance(domain, Domain) else domain
+        trait_cols = [f"{domain_val}_{t}" for t in traits]
 
         # If the user asks for a gene that isn't even in the dataset, they can't have 'all'
-        missing_cols = set(target_cols) - set(self._obj.columns)
+        missing_cols = set(trait_cols) - set(self._obj.columns)
         if missing_cols:
             return pd.Series(False, index=self._obj.index)
 
-        # Matrix math: Check if ALL target columns are True
-        return self._obj[target_cols].all(axis=1)
+        # Matrix math: Check if ALL trait columns are True
+        return self._obj[trait_cols].all(axis=1)
 
-    def has_gene(self, gene_col: str, target_gene: str) -> pd.Series:
+    def has_gene(self, gene_col: str, gene_name: str) -> pd.Series:
         """
         Searches for a specific gene within a comma-separated column.
 
         Args:
             gene_col: Column name containing gene lists.
-            target_gene: The specific gene to find.
+            gene_name: The specific gene to find.
 
         Returns:
             A boolean Series.
         """
         # str.contains with na=False avoids allocating a new Series with fillna
-        return self._obj[gene_col].str.contains(target_gene, regex=False, na=False)
+        return self._obj[gene_col].str.contains(gene_name, regex=False, na=False)
 
     def sort_loci(self, locus_col: str) -> pd.DataFrame:
         """
@@ -760,7 +833,7 @@ class GenoAccessor:
         """
         df = self._obj.copy()
         # Extract the integer part of the locus (e.g., "K10" -> 10, "O2v1" -> 2)
-        sort_key = df[locus_col].str.extract(r'(\d+)').astype(float)
+        sort_key = df[locus_col].str.extract(r'(\d+)', expand=False).astype(float)
         return df.iloc[sort_key.sort_values().index]
 
 
@@ -778,13 +851,13 @@ class QCAccessor:
         >>> df = pd.DataFrame({'qc_N50': [50000, 5000]})
         >>> clean_df = df.qc.filter_assemblies(min_n50=10000)
     """
-    def __init__(self, pandas_obj):
+    def __init__(self, pandas_obj: pd.DataFrame):
         self._obj = pandas_obj
 
     @property
     def metrics(self) -> pd.DataFrame:
-        """Returns the QC metrics matrix with 'qc_' prefix removed."""
-        return self._obj.filter(regex="^qc_").rename(columns=lambda c: c.replace('qc_', '', 1))
+        """Returns the QC metrics matrix with the prefix removed."""
+        return self._obj.filter(regex=f"^{Domain.QC.value}_").rename(columns=lambda c: c.replace(f'{Domain.QC.value}_', '', 1))
 
     def filter_assemblies(self, min_n50: int = 10000, max_contigs: int = 500,
                           require_species: str = None) -> pd.DataFrame:
@@ -801,24 +874,28 @@ class QCAccessor:
         """
         df = self._obj
 
-        # Start with a boolean mask where everything is True
-        mask = pd.Series(True, index=df.index)
+        masks = []
 
-        if 'qc_N50' in df.columns:
+        if f'{Domain.QC.value}_N50' in df.columns:
             # Coerce to numeric in case Kleborate spat out weird strings like '-'
-            n50 = pd.to_numeric(df['qc_N50'], errors='coerce')
-            mask &= (n50 >= min_n50) | n50.isna()
+            n50 = pd.to_numeric(df[f'{Domain.QC.value}_N50'], errors='coerce')
+            masks.append((n50 >= min_n50) | n50.isna())
 
-        if 'qc_contig_count' in df.columns:
-            contigs = pd.to_numeric(df['qc_contig_count'], errors='coerce')
-            mask &= (contigs <= max_contigs) | contigs.isna()
+        if f'{Domain.QC.value}_contig_count' in df.columns:
+            contigs = pd.to_numeric(df[f'{Domain.QC.value}_contig_count'], errors='coerce')
+            masks.append((contigs <= max_contigs) | contigs.isna())
 
-        if require_species and 'qc_species' in df.columns:
-            mask &= df['qc_species'].str.contains(require_species, case=False, na=False)
+        if require_species and f'{Domain.QC.value}_species' in df.columns:
+            masks.append(df[f'{Domain.QC.value}_species'].str.contains(require_species, case=False, na=False))
+            
+        if not masks:
+            return df.copy()
 
-        return df[mask].copy()
+        # Efficiently reduce the conditions using numpy logic
+        final_mask = np.logical_and.reduce(masks)
+        return df[final_mask].copy()
 
-    def report(self) -> pd.DataFrame:
+    def report(self) -> pd.Series:
         """
         Generates a summary report of dataset quality.
 
@@ -827,9 +904,9 @@ class QCAccessor:
         """
         metrics = self.metrics
         report = {}
-        if 'qc_QC_warnings' in metrics.columns:
-            report['Total Warnings'] = (metrics['qc_QC_warnings'] != '-').sum()
-        if 'qc_N50' in metrics.columns:
-            report['Median N50'] = pd.to_numeric(metrics['qc_N50'], errors='coerce').median()
+        if 'QC_warnings' in metrics.columns:
+            report['Total Warnings'] = (metrics['QC_warnings'] != '-').sum()
+        if 'N50' in metrics.columns:
+            report['Median N50'] = pd.to_numeric(metrics['N50'], errors='coerce').median()
 
         return pd.Series(report)

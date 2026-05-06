@@ -3,32 +3,37 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from joblib import dump as joblib_dump, load as joblib_load
 from warnings import warn
-from multiprocessing import cpu_count
 import functools
+try:
+    from os import process_cpu_count as cpu_count
+except ImportError:
+    from os import cpu_count
+
 import pandas as pd
 import numpy as np
-from scipy.special import expit
 import statsmodels.api as sm
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 import jax.numpy as jnp
 import jax.scipy as jsp
+from jax.nn import sigmoid
 from jax import random, vmap, jit
-from numpyro import optim, distributions as dist, diagnostics as diag, sample as samp, set_host_device_count
+from numpyro import optim, distributions as dist, diagnostics as diag, sample as samp, set_host_device_count, plate
 from numpyro.infer import MCMC, NUTS, Trace_ELBO, SVI, autoguide, Predictive
+
 from seroepi.estimators._base import BaseEstimator, PrevalenceEstimates, IncidenceEstimates
-from seroepi.constants import InferenceMethod, TimeResolution
+from seroepi.constants import BayesianInferenceMethod, TemporalResolution
 
 
 # Set-up ---------------------------------------------------------------------------------------------------------------
 # Tell JAX to split the CPU into multiple virtual devices for parallel chains
-set_host_device_count(min(cpu_count(), 4))
+set_host_device_count(cpu_count())
 
 
 # TypeVars -------------------------------------------------------------------------------------------------------------
 T_Modelled = TypeVar('T_Modelled', bound='ModelledMixin')
 
 
-# TypeVars -------------------------------------------------------------------------------------------------------------
+# Mixins ---------------------------------------------------------------------------------------------------------------
 class ModelledMixin(ABC):
     """
     Contract for estimators with an internal fitted state.
@@ -65,6 +70,10 @@ class ModelledMixin(ABC):
     def predict(self, df: pd.DataFrame):
         """Uses the fitted internal state to generate predictions on the dataframe."""
         pass
+
+    def calculate(self, df: pd.DataFrame):
+        """One-liner to fit and predict on the same data."""
+        return self.fit(df).predict(df)
 
     def save_model(self, filepath: Union[str, Path]) -> None:
         """
@@ -115,9 +124,9 @@ class BayesianMixin:
     """
     Shared inference logic for NumPyro-based Bayesian estimators.
     """
-    def _init_bayesian(self, method: InferenceMethod, num_samples: int, num_chains: int, 
+    def _init_bayesian(self, method: BayesianInferenceMethod, num_samples: int, num_chains: int,
                        num_warmup: int, svi_steps: int, seed: int):
-        self.method = InferenceMethod(method) if isinstance(method, str) else method
+        self.method = BayesianInferenceMethod(method) if isinstance(method, str) else method
         self.num_samples = num_samples
         self.num_chains = num_chains
         self.num_warmup = num_warmup
@@ -126,11 +135,24 @@ class BayesianMixin:
         self.samples_ = None
         self.extra_fields_ = None
 
+    def _check_zero_padding(self, df: pd.DataFrame):
+        """Ensures the incoming dataframe has been properly padded for Bayesian inference."""
+        meta = df.attrs.get('metric_meta', {})
+
+        # If metadata is entirely missing, we assume it's a raw pandas df and warn,
+        # but let the math fail naturally if it's jagged.
+        if 'is_zero_padded' in meta and not meta['is_zero_padded']:
+            raise ValueError(
+                f"Mathematical Integrity Error: {self.__class__.__name__} requires a strictly rectangular, "
+                "zero-padded matrix to construct the posterior geometry. "
+                "Please regenerate the dataset using `.epi.aggregate_...(pad_zeros=True)`."
+            )
+
     def _run_inference(self, jax_data: dict, rng_key: random.PRNGKey):
         """Routes to the correct inference engine based on self.method."""
-        if self.method == InferenceMethod.MCMC:
+        if self.method == BayesianInferenceMethod.MCMC:
             return self._mcmc_inference(jax_data, rng_key)
-        elif self.method == InferenceMethod.SVI:
+        elif self.method == BayesianInferenceMethod.SVI:
             return self._svi_inference(jax_data, rng_key)
         else:
             raise ValueError(f"Unknown method: {self.method}. Choose from MCMC or SVI.")
@@ -157,7 +179,7 @@ class BayesianMixin:
         """Returns MCMC diagnostics (R-hat, ESS) as a formatted DataFrame."""
         if hasattr(self, 'check_is_fitted'):
             self.check_is_fitted()
-        if self.method != InferenceMethod.MCMC:
+        if self.method != BayesianInferenceMethod.MCMC:
             raise TypeError("Diagnostics are only available for MCMC inference.")
             
         summary_dict = diag.summary(self.samples_, prob=0.95, group_by_chain=False)
@@ -195,7 +217,7 @@ class BayesianMixin:
 
 
 # Estimators -----------------------------------------------------------------------------------------------------------
-class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin, BayesianMixin):
+class BayesianPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[PrevalenceEstimates]):
     """
     Bayesian hierarchical model for prevalence estimation.
 
@@ -208,7 +230,7 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         >>> estimator = BayesianPrevalenceEstimator(method='mcmc')
         >>> # result = estimator.calculate(agg_df)
     """
-    def __init__(self, method: InferenceMethod = InferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
+    def __init__(self, method: BayesianInferenceMethod = BayesianInferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000, target_event: str = 'event', target_n: str = 'n', seed: int = 42):
         """
         Initializes the BayesianPrevalenceEstimator.
@@ -263,32 +285,30 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         Returns:
             The fitted estimator instance.
         """
-        self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n])
+        self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n, 'trait'])
 
-        # FIX: Gracefully handle 1-dimensional stratification by injecting a dummy hierarchy
-        if len(self.strata_) == 1:
-            agg_df = agg_df.copy()
-            agg_df['_dummy_target'] = 'All Targets'
-            self.strata_.append('_dummy_target')
-
-        if len(self.strata_) < 2:
-            raise ValueError(f"Requires at least two strata levels. Found: {self.strata_}")
-
-        group_col = self.strata_[0]
-        target_col = self.strata_[1]
+        df_fit = agg_df.copy()
+        
+        if not self.strata_:
+            df_fit['_dummy_group'] = 'Global'
+            group_col = '_dummy_group'
+        else:
+            group_col = self.strata_[0]
+            
+        target_col = 'trait'
 
         # Fit and store the encoders exactly once!
         for col in [group_col, target_col]:
             le = LabelEncoder()
             # We fit_transform here, establishing the strict mapping
-            agg_df[f'{col}_idx'] = le.fit_transform(agg_df[col].astype(str))
+            df_fit[f'{col}_idx'] = le.fit_transform(df_fit[col].astype(str))
             self.encoders_[col] = le
 
         jax_data = {
-            "target_idx": jnp.array(agg_df[f'{target_col}_idx'].values),
-            "group_idx": jnp.array(agg_df[f'{group_col}_idx'].values),
-            "n": jnp.array(agg_df[self.target_n].values),
-            "event": jnp.array(agg_df[self.target_event].values),
+            "target_idx": jnp.array(df_fit[f'{target_col}_idx'].values),
+            "group_idx": jnp.array(df_fit[f'{group_col}_idx'].values),
+            "n": jnp.array(df_fit[self.target_n].values),
+            "event": jnp.array(df_fit[self.target_event].values),
             "n_targets": len(self.encoders_[target_col].classes_),
             "n_groups": len(self.encoders_[group_col].classes_)
         }
@@ -312,31 +332,33 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
         """
         self.check_is_fitted()
 
-        # If a dummy target was added during fit, we need to inject it here too
         predict_df = agg_df.copy()
-        if '_dummy_target' in self.strata_ and '_dummy_target' not in predict_df.columns:
-            predict_df['_dummy_target'] = 'All Targets'
+        
+        if not self.strata_:
+            predict_df['_dummy_group'] = 'Global'
+            group_col = '_dummy_group'
+        else:
+            group_col = self.strata_[0]
 
-        group_col = self.strata_[0]
-        target_col = self.strata_[1]
+        target_col = 'trait'
 
         target_idx = jnp.array(self.encoders_[target_col].transform(predict_df[target_col].astype(str)))
         group_idx = jnp.array(self.encoders_[group_col].transform(predict_df[group_col].astype(str)))
 
         # Matrix math against self.samples_ ...
-        alpha_draws = self.samples_["alpha"][:, None]
-        r_group_draws = self.samples_["z_group"] * self.samples_["sd_group"][:, None]
-        logit_p_draws = alpha_draws + self.samples_["b_target"][:, target_idx] + r_group_draws[:, group_idx]
-        p_draws = expit(logit_p_draws)
-
-        estimate = jnp.mean(p_draws, axis=0)
-        lower, upper = jnp.quantile(p_draws, jnp.array([0.025, 0.975]), axis=0)
+        estimate, lower, upper = _compute_prevalence_posterior(
+            self.samples_["alpha"],
+            self.samples_["b_target"],
+            self.samples_["z_group"],
+            self.samples_["sd_group"],
+            target_idx,
+            group_idx
+        )
 
         new_cols = {
             'estimate': np.array(estimate),
             'lower': np.array(lower),
-            'upper': np.array(upper),
-            'method': self._method_label
+            'upper': np.array(upper)
         }
 
         # 2. Fast horizontal concatenation (ignores the deep copy overhead)
@@ -344,29 +366,20 @@ class BayesianPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMi
 
         return PrevalenceEstimates(
             data=result_df,
-            stratified_by=[s for s in self.strata_ if s != '_dummy_target'],
+            stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            aggregation_type=self.meta_.get("type", "unknown"),
-            target=self.meta_.get("target", "unknown")
+            aggregation_type=self.meta_.get("aggregation_type", "unknown"),
+            trait=self.meta_.get("trait", "unknown")
         )
 
-    def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
-        """One-liner to fit and predict on the same data."""
-        return self.fit(agg_df).predict(agg_df)
 
-
-class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin):
+class RegressionPrevalenceEstimator(ModelledMixin, BaseEstimator[PrevalenceEstimates]):
     """
     Frequentist binomial GLM for prevalence estimation.
 
     Uses statsmodels to fit a Generalized Linear Model with a binomial family
     and logit link.
-
-    Examples:
-        >>> from seroepi.estimators import RegressionPrevalenceEstimator
-        >>> estimator = RegressionPrevalenceEstimator()
-        >>> # result = estimator.calculate(agg_df)
     """
     def __init__(self, target_event: str = 'event', target_n: str = 'n'):
         """
@@ -382,11 +395,13 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
 
     def fit(self, agg_df: pd.DataFrame) -> 'RegressionPrevalenceEstimator':
         """Fits the binomial GLM."""
-        self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n])
+        self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n, 'trait'])
+        
+        feature_cols = self.strata_ + ['trait'] if 'trait' in agg_df.columns else self.strata_
 
         # 1. Fit the encoder (We still use sklearn here because statsmodels' categorical handling can be clunky)
         self.encoder_ = OneHotEncoder(drop='first', sparse_output=False, handle_unknown='ignore')
-        X_encoded = self.encoder_.fit_transform(agg_df[self.strata_])
+        X_encoded = self.encoder_.fit_transform(agg_df[feature_cols])
 
         # Add the intercept
         X = sm.add_constant(X_encoded)
@@ -409,7 +424,8 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
         self.check_is_fitted()
 
         # Transform new data
-        X_encoded = self.encoder_.transform(agg_df[self.strata_])
+        feature_cols = self.strata_ + ['trait'] if 'trait' in agg_df.columns else self.strata_
+        X_encoded = self.encoder_.transform(agg_df[feature_cols])
         X = sm.add_constant(X_encoded, has_constant='add')
 
         # statsmodels natively handles the delta method and inverse-link transformations
@@ -418,8 +434,7 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
         new_cols = {
             'estimate': predictions['mean'].values,
             'lower': predictions['mean_ci_lower'].values,
-            'upper': predictions['mean_ci_upper'].values,
-            'method': self._method_label
+            'upper': predictions['mean_ci_upper'].values
         }
 
         result_df = pd.concat([agg_df.copy(), pd.DataFrame(new_cols, index=agg_df.index)], axis=1)
@@ -429,16 +444,12 @@ class RegressionPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], Modelled
             stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            aggregation_type=self.meta_.get("type", "unknown"),
-            target=self.meta_.get("target", "unknown")
+            aggregation_type=self.meta_.get("aggregation_type", "unknown"),
+            trait=self.meta_.get("trait", "unknown")
         )
 
-    def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
-        """One-liner to fit and predict."""
-        return self.fit(agg_df).predict(agg_df)
 
-
-class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMixin, BayesianMixin):
+class SpatialPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[PrevalenceEstimates]):
     """
     Gaussian Process (GP) based spatial prevalence estimator.
 
@@ -451,7 +462,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         >>> # result = estimator.calculate(agg_df)
     """
     def __init__(self, lat_col: str = 'lat', lon_col: str = 'lon',
-                 method: InferenceMethod = InferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
+                 method: BayesianInferenceMethod = BayesianInferenceMethod.MCMC, num_samples: int = 1500, num_chains: int = 4,
                  num_warmup: int = 1000, svi_steps: int = 3000,
                  target_event: str = 'event', target_n: str = 'n', seed: int = 42):
         """
@@ -555,7 +566,7 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
         X_train = jnp.array(self.X_train_)
 
         # 2. Use JAX vmap to instantly vectorize this complex math across all 1500 samples!
-        logit_p_draws = _vectorized_gp_predict(
+        estimate, lower, upper = _compute_spatial_posterior(
             self.samples_['var'],
             self.samples_['length'],
             self.samples_['alpha'],
@@ -564,33 +575,22 @@ class SpatialPrevalenceEstimator(BaseEstimator[PrevalenceEstimates], ModelledMix
             X_test
         )
 
-        p_draws = expit(logit_p_draws)
-
-        # 4. Extract Estimates
-        estimate = jnp.mean(p_draws, axis=0)
-        lower, upper = jnp.quantile(p_draws, jnp.array([0.025, 0.975]), axis=0)
-
         result_df = df.copy()
         result_df['estimate'] = np.array(estimate)
         result_df['lower'] = np.array(lower)
         result_df['upper'] = np.array(upper)
-        result_df['method'] = self._method_label
 
         return PrevalenceEstimates(
             data=result_df,
             stratified_by=[self.lat_col, self.lon_col],
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             method=self._method_label,
-            aggregation_type=self.meta_.get("type", "unknown"),
-            target=self.meta_.get("target", "unknown")
+            aggregation_type=self.meta_.get("aggregation_type", "unknown"),
+            trait=self.meta_.get("trait", "unknown")
         )
 
-    def calculate(self, agg_df: pd.DataFrame) -> PrevalenceEstimates:
-        """One-liner to fit and predict."""
-        return self.fit(agg_df).predict(agg_df)
 
-
-class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMixin):
+class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimates]):
     """
     Negative Binomial GLM for time-series incidence estimation.
 
@@ -621,7 +621,7 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
     def fit(self, inc_df: pd.DataFrame) -> 'RegressionIncidenceEstimator':
         """Fits the Negative Binomial GLM to each stratum."""
         self.meta_ = inc_df.attrs.get("metric_meta", {})
-        target_col = self.meta_.get("target")
+        target_col = self.meta_.get("trait")
         self.freq_ = self.meta_.get("freq")
         self.strata_ = self.meta_.get("stratified_by", [])
 
@@ -630,7 +630,8 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
 
         # Sort entirely upstream to avoid O(N log N) operations inside the loop
         inc_df_sorted = inc_df.sort_values('date')
-        groups = inc_df_sorted.groupby(self.strata_, observed=True) if self.strata_ else [('Global', inc_df_sorted)]
+        group_cols = self.strata_ + ['trait'] if 'trait' in inc_df_sorted.columns else self.strata_
+        groups = inc_df_sorted.groupby(group_cols, observed=True) if group_cols else [('Global', inc_df_sorted)]
 
         for name, group in groups:
             # Drop the .sort_values() here. Just copy.
@@ -646,11 +647,11 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
             # Create a numeric Time Step for the slope
             time_deltas = df_model['date'] - df_model['date'].min()
 
-            if self.freq_ == TimeResolution.MONTH.value or self.freq_.startswith('M'):
+            if self.freq_ == TemporalResolution.MONTH.value or self.freq_.startswith('M'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'M'))
-            elif self.freq_ == TimeResolution.WEEK.value or self.freq_.startswith('W'):
+            elif self.freq_ == TemporalResolution.WEEK.value or self.freq_.startswith('W'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'W'))
-            elif self.freq_ == TimeResolution.YEAR.value or self.freq_.startswith('Y'):
+            elif self.freq_ == TemporalResolution.YEAR.value or self.freq_.startswith('Y'):
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'Y'))
             else:
                 df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'D'))
@@ -675,15 +676,16 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
         """Extracts Incidence Rate Ratios (IRR) and intervals."""
         self.check_is_fitted()
 
-        groups = inc_df.groupby(self.strata_, observed=True) if self.strata_ else [('Global', inc_df)]
+        group_cols = self.strata_ + ['trait'] if 'trait' in inc_df.columns else self.strata_
+        groups = inc_df.groupby(group_cols, observed=True) if group_cols else [('Global', inc_df)]
         results = []
 
         for name, _ in groups:
             fit = self.fit_results_.get(name)
 
-            row = {k: v for k, v in zip(self.strata_, name)} if self.strata_ and isinstance(name, tuple) else {}
-            if self.strata_ and not isinstance(name, tuple):
-                row = {self.strata_[0]: name}
+            row = {k: v for k, v in zip(group_cols, name)} if group_cols and isinstance(name, tuple) else {}
+            if group_cols and not isinstance(name, tuple):
+                row = {group_cols[0]: name}
 
             if fit is None:
                 row.update({
@@ -709,15 +711,186 @@ class RegressionIncidenceEstimator(BaseEstimator[IncidenceEstimates], ModelledMi
             data=inc_df.copy(),
             stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
-            target=self.meta_.get("target", "unknown"),
+            trait=self.meta_.get("trait", "unknown"),
             freq=self.freq_,
-            aggregation_type=self.meta_.get("type", "unknown"),
+            aggregation_type=self.meta_.get("aggregation_type", "unknown"),
             model_results=pd.DataFrame(results)
         )
 
-    def calculate(self, inc_df: pd.DataFrame) -> IncidenceEstimates:
-        """One-liner to fit and predict."""
-        return self.fit(inc_df).predict(inc_df)
+
+class BayesianIncidenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[IncidenceEstimates]):
+    """
+    Bayesian Structural Time Series (BSTS) for incidence forecasting.
+
+    Uses a Gaussian Random Walk with drift to model latent log-incidence, 
+    and a Negative Binomial likelihood to handle overdispersed clinical count data.
+    """
+
+    def __init__(self,
+                 forecast_horizon: int = 12,
+                 method: BayesianInferenceMethod = BayesianInferenceMethod.MCMC,
+                 num_samples: int = 1500,
+                 num_chains: int = 4,
+                 num_warmup: int = 1000,
+                 svi_steps: int = 3000,
+                 seed: int = 42):
+
+        self.forecast_horizon = forecast_horizon
+        self._init_bayesian(method, num_samples, num_chains, num_warmup, svi_steps, seed)
+        self._method_label = f'bsts_forecast_{self.method.value}'
+
+        # Internal state
+        self.strata_ = []
+        self.meta_ = {}
+
+    def _model(self, T, n_strata, Y=None, forecast_horizon=0):
+        """The NumPyro BSTS Model."""
+        total_T = T + forecast_horizon
+        # Priors for the latent state parameters
+        # Base log-rate at t=0
+        mu_0 = samp("mu_0", dist.Normal(0, 2).expand([n_strata]))
+        # The overarching trend (drift)
+        drift = samp("drift", dist.Normal(0, 0.5).expand([n_strata]))
+        # How volatile the month-to-month changes are
+        sigma_rw = samp("sigma_rw", dist.HalfNormal(0.5).expand([n_strata]))
+        # Overdispersion for the Negative Binomial count data
+        dispersion = samp("dispersion", dist.HalfNormal(2).expand([n_strata]))
+        # Gaussian Random Walk (Innovations)
+        with plate("time", total_T):
+            innovations = samp("innovations", dist.Normal(0, 1).expand([n_strata]))
+        # Construct the Latent Log-Rate, use JAX's cumulative sum to build the random walk over time
+        rw = jnp.cumsum(innovations * sigma_rw, axis=0)
+        time_steps = jnp.arange(total_T)[:, None]
+        # Latent state equation: Baseline + Trend + Random Walk
+        log_rate = mu_0 + (time_steps * drift) + rw
+        # Likelihood function
+        if Y is not None:  # INFERENCE MODE (Fitting historical data)
+            historical_rate = log_rate[:T]
+            with plate("historical_time", T):
+                samp("obs", dist.NegativeBinomial2(mean=jnp.exp(historical_rate), concentration=dispersion), obs=Y)
+        else:  # FORECASTING MODE (Projecting the future)
+            with plate("all_time", total_T):
+                samp("obs", dist.NegativeBinomial2(mean=jnp.exp(log_rate), concentration=dispersion))
+
+    def fit(self, inc_df: pd.DataFrame) -> 'BayesianIncidenceEstimator':
+        """Pivots the count data into a matrix and fits the BSTS model."""
+        self.meta_ = inc_df.attrs.get("metric_meta", {})
+        self.strata_ = self.meta_.get("stratified_by", [])
+        
+        df = inc_df.copy()
+        group_cols = self.strata_ + ['trait'] if 'trait' in df.columns else self.strata_
+        
+        if not group_cols:
+            df['_dummy_group'] = 'Global'
+            group_cols = ['_dummy_group']
+
+        # Pivot to get a T x n_strata continuous matrix
+        pivot_df = df.pivot_table(
+            index='date',
+            columns=group_cols,
+            values='variant_count',
+            fill_value=0
+        )
+        
+        self.dates_ = pivot_df.index
+        self.T_ = len(self.dates_)
+        self.n_strata_ = pivot_df.shape[1]
+        self.strata_labels_ = pivot_df.columns
+        
+        jax_data = {
+            "T": self.T_,
+            "n_strata": self.n_strata_,
+            "Y": jnp.array(pivot_df.values),
+            "forecast_horizon": 0  # 0 during inference
+        }
+        
+        rng_key = random.PRNGKey(self.seed)
+        self.samples_ = self._run_inference(jax_data, rng_key)
+        self.is_fitted_ = True
+        return self
+
+    def predict(self, inc_df: pd.DataFrame) -> IncidenceEstimates:
+        """Forecasts future incidence counts using the fitted posterior samples."""
+        self.check_is_fitted()
+        
+        pred = Predictive(self._model, self.samples_)
+        pred_key = random.PRNGKey(self.seed + 1)
+        
+        # Run forward for predictions
+        pred_samples = pred(
+            pred_key,
+            T=self.T_,
+            n_strata=self.n_strata_,
+            Y=None,
+            forecast_horizon=self.forecast_horizon
+        )
+        
+        # obs_draws is shape (num_samples, T + forecast_horizon, n_strata)
+        estimate, lower, upper, drifts, p_vals = _summarize_incidence_posterior(
+            pred_samples['obs'], 
+            self.samples_['drift']
+        )
+        
+        # Reconstruct continuous dates, adding the future horizon
+        freq_str = self.meta_.get("freq", TemporalResolution.MONTH.value)
+        try:
+            freq = TemporalResolution(freq_str).pandas_offset
+            if not freq: freq = 'MS'
+        except ValueError:
+            freq = 'MS'
+            
+        all_dates = pd.date_range(start=self.dates_[0], periods=self.T_ + self.forecast_horizon, freq=freq)
+        
+        # Melt the predictions back into long format
+        results = []
+        group_cols = self.strata_ + ['trait'] if 'trait' in inc_df.columns else self.strata_
+        if not group_cols:
+            group_cols = ['_dummy_group']
+            
+        for i, date in enumerate(all_dates):
+            for j, strata_val in enumerate(self.strata_labels_):
+                row = {'date': date}
+                if group_cols:
+                    if isinstance(strata_val, tuple):
+                        row.update(zip(group_cols, strata_val))
+                    else:
+                        row[group_cols[0]] = strata_val
+                
+                row['estimate'] = float(estimate[i, j])
+                row['lower'] = float(lower[i, j])
+                row['upper'] = float(upper[i, j])
+                results.append(row)
+                
+        res_df = pd.DataFrame(results)
+        
+        # Merge back the original counts (this ensures that historical rows keep variant_count, total_sequenced)
+        merge_cols = ['date'] + (self.strata_ + ['trait'] if 'trait' in inc_df.columns else self.strata_)
+        final_df = res_df.merge(inc_df, on=merge_cols, how='left')
+        target = self.meta_.get("trait")
+        # Build the model summary with incidence rate ratios (drift exponential)
+        
+        model_res = []
+        for j, strata_val in enumerate(self.strata_labels_):
+            row = {}
+            if group_cols:
+                if isinstance(strata_val, tuple):
+                    row.update(zip(group_cols, strata_val))
+                else:
+                    row[group_cols[0]] = strata_val
+            row['IRR'] = float(jnp.exp(drifts[j]))
+            row['prob_increasing'] = float(p_vals[j])
+            row['status'] = 'Converged'
+            model_res.append(row)
+            
+        return IncidenceEstimates(
+            data=final_df,
+            stratified_by=self.strata_,
+            adjusted_for=self.meta_.get("adjusted_for", "unknown"),
+            trait=target or "unknown",
+            freq=freq_str,
+            aggregation_type=self.meta_.get("aggregation_type", "unknown"),
+            model_results=pd.DataFrame(model_res)
+        )
 
 
 # Kernels --------------------------------------------------------------------------------------------------------------
@@ -733,6 +906,7 @@ def _rbf_kernel(X, Z, var, length, jitter=1e-5):
     return K
 
 
+# Kernels --------------------------------------------------------------------------------------------------------------
 @functools.partial(jit)
 @functools.partial(vmap, in_axes=(0, 0, 0, 0, None, None))
 def _vectorized_gp_predict(var, length, alpha, f, X_train, X_test):
@@ -742,3 +916,32 @@ def _vectorized_gp_predict(var, length, alpha, f, X_train, X_test):
     v = jsp.linalg.solve(K_XX, f, assume_a='pos')
     f_star = K_Xstar_X @ v
     return alpha + f_star
+
+@jit
+def _compute_spatial_posterior(var, length, alpha, f, X_train, X_test):
+    """Vectorized and JIT-compiled posterior boundaries for GP Spatial prevalence."""
+    logit_p_draws = _vectorized_gp_predict(var, length, alpha, f, X_train, X_test)
+    p_draws = sigmoid(logit_p_draws)
+    estimate = jnp.mean(p_draws, axis=0)
+    bounds = jnp.quantile(p_draws, jnp.array([0.025, 0.975]), axis=0)
+    return estimate, bounds[0], bounds[1]
+
+@jit
+def _compute_prevalence_posterior(alpha, b_target, z_group, sd_group, target_idx, group_idx):
+    """Vectorized and JIT-compiled posterior boundaries for hierarchical prevalence."""
+    alpha_draws = alpha[:, None]
+    r_group_draws = z_group * sd_group[:, None]
+    logit_p_draws = alpha_draws + b_target[:, target_idx] + r_group_draws[:, group_idx]
+    p_draws = sigmoid(logit_p_draws)
+    estimate = jnp.mean(p_draws, axis=0)
+    bounds = jnp.quantile(p_draws, jnp.array([0.025, 0.975]), axis=0)
+    return estimate, bounds[0], bounds[1]
+
+@jit
+def _summarize_incidence_posterior(obs_draws, drifts_draws):
+    """Vectorized and JIT-compiled posterior summaries for BSTS Incidence."""
+    estimate = jnp.mean(obs_draws, axis=0)
+    bounds = jnp.quantile(obs_draws, jnp.array([0.025, 0.975]), axis=0)
+    drifts = jnp.mean(drifts_draws, axis=0)
+    p_vals = jnp.mean(drifts_draws > 0, axis=0)
+    return estimate, bounds[0], bounds[1], drifts, p_vals

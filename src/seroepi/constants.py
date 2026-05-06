@@ -1,7 +1,6 @@
 """
 Enums for non-user-facing API constants - mostly to help with the app
 """
-
 from enum import StrEnum, auto
 
 
@@ -35,6 +34,7 @@ class PlotType(_UiEnum):
     ALPHA_DIVERSITY = auto()
     BETA_HEATMAP = auto()
     NETWORK = auto()
+    LONGEVITY = auto()
 
 
 class HoldoutStrategy(_UiEnum):
@@ -45,12 +45,36 @@ class HoldoutStrategy(_UiEnum):
 
 class MetricType(_UiEnum):
     PREVALENCE = auto()
+    DIVERSITY = auto()
     INCIDENCE = auto()
 
 
 class AggregationType(_UiEnum):
     TRAIT = auto()
     COMPOSITIONAL = auto()
+
+
+class Domain(_UiEnum):
+    AMR = auto()
+    VIRULENCE = auto()
+    QC = auto()
+    SPATIAL = auto()
+    TEMPORAL = auto()
+    SPATIAL_RES = auto()
+    TEMPORAL_RES = auto()
+    GENOTYPE = "geno"
+    PHENOTYPE = "pheno"
+    CLUSTER = auto()
+
+
+class DistanceFlavour(_UiEnum):
+    PATHOGENWATCH = auto()
+    SKA2 = auto()
+    NEWICK = auto()
+
+
+class GenotypeFlavour(_UiEnum):
+    PATHOGENWATCH_KLEBORATE = "pathogenwatch-kleborate"
 
 
 class EstimatorType(_UiEnum):
@@ -69,17 +93,21 @@ class EstimatorType(_UiEnum):
         }[self]
 
 
-class InferenceMethod(_UiEnum):
-    MCMC = "mcmc"
-    SVI = "svi"
+class BayesianInferenceMethod(_UiEnum):
+    MCMC = auto()
+    SVI = auto()
 
 
-class TimeResolution(_UiEnum):
-    YEAR = "year"
-    MONTH = "month"
-    WEEK = "week"
-    DAY = "day"
-    UNKNOWN = "unknown"
+class TemporalResolution(_UiEnum):
+    YEAR = auto()
+    MONTH = auto()
+    WEEK = auto()
+    DAY = auto()
+    UNKNOWN = auto()
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
 
     @property
     def pandas_offset(self) -> str:
@@ -92,17 +120,6 @@ class TimeResolution(_UiEnum):
             self.UNKNOWN: ''
         }[self]
 
-
-class GeoResolution(_UiEnum):
-    GLOBAL = "global"
-    CONTINENT = "continent"
-    REGION = "region"
-    COUNTRY = "country"
-    CITY = "city"
-    HOSPITAL = "hospital"
-    EXACT = "exact"
-    UNKNOWN = "unknown"
-
     @property
     def pandas_period(self) -> str:
         """Returns the Pandas period alias."""
@@ -113,3 +130,44 @@ class GeoResolution(_UiEnum):
             self.DAY: 'D',
             self.UNKNOWN: ''
         }[self]
+
+
+class SpatialResolution(_UiEnum):
+    GLOBAL = auto()
+    CONTINENT = auto()
+    REGION = auto()
+    COUNTRY = auto()
+    CITY = auto()
+    HOSPITAL = auto()
+    EXACT = auto()
+    UNKNOWN = auto()
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
+
+
+class DistanceMetricType(StrEnum):
+    """
+    Enumeration of supported metric types for pairwise comparisons.
+
+    These metric types define how to interpret the numerical values
+    in a distance/similarity matrix.
+
+    Attributes:
+        ABSOLUTE_DISTANCE: An absolute distance measure (e.g., 5 SNPs).
+        RELATIVE_DISTANCE: A relative distance measure typically between 0.0 and 1.0 (e.g., 0.05 Hamming).
+        ABSOLUTE_SIMILARITY: An absolute similarity measure (e.g., 95 shared nucleotides).
+        RELATIVE_SIMILARITY: A relative similarity measure typically between 0.0 and 1.0 (e.g., 0.95 Jaccard).
+    """
+    ABSOLUTE_DISTANCE = auto()  # e.g., 5 SNPs
+    RELATIVE_DISTANCE = auto()  # e.g., 0.05 Hamming
+    ABSOLUTE_SIMILARITY = auto()  # e.g., 95 shared nucleotides
+    RELATIVE_SIMILARITY = auto()  # e.g., 0.95 Jaccard
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            if v := cls.__members__.get(value.upper().replace(" ", "_").replace("-", "_")):
+                return v
+        return cls.ABSOLUTE_DISTANCE

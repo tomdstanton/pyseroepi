@@ -2,18 +2,10 @@
 Module for estimating trait prevalence, diversity and incidence among isolates.
 """
 
-from seroepi.estimators._base import (
-    Estimates,
-    PrevalenceEstimates,
-    IncidenceEstimates,
-    AlphaDiversityEstimates,
-    BetaDiversityEstimates,
-)
-from seroepi.estimators._core import (
-    FrequentistPrevalenceEstimator,
-    AlphaDiversityEstimator,
-    BetaDiversityEstimator,
-)
+from seroepi.estimators._base import (BaseEstimator, Estimates, PrevalenceEstimates, IncidenceEstimates,
+                                      AlphaDiversityEstimates, BetaDiversityEstimates)
+from seroepi.estimators._core import (FrequentistPrevalenceEstimator, AlphaDiversityEstimator,
+                                      BetaDiversityEstimator)
 
 __all__ = [
     "Estimates",
@@ -21,6 +13,7 @@ __all__ = [
     "IncidenceEstimates",
     "AlphaDiversityEstimates",
     "BetaDiversityEstimates",
+    "BaseEstimator",
     "FrequentistPrevalenceEstimator",
     "AlphaDiversityEstimator",
     "BetaDiversityEstimator",
@@ -28,12 +21,14 @@ __all__ = [
 
 try:
     from seroepi.estimators._modelled import (
+        ModelledMixin, BayesianMixin,
         BayesianPrevalenceEstimator,
         RegressionPrevalenceEstimator,
         SpatialPrevalenceEstimator,
         RegressionIncidenceEstimator,
     )
     __all__.extend([
+        "ModelledMixin", "BayesianMixin"
         "BayesianPrevalenceEstimator",
         "RegressionPrevalenceEstimator",
         "SpatialPrevalenceEstimator",

@@ -1,0 +1,334 @@
+import os
+from pathlib import Path
+import importlib.metadata
+
+from shiny import reactive, render, ui, module
+from asyncio import sleep, to_thread
+from joblib import dump as joblib_dump, load as joblib_load
+import shinyswatch
+
+from google import genai
+
+from seroepi.app._burden import burden_ui, burden_server
+from seroepi.app._formulation import formulation_ui, formulation_server
+from seroepi.app._logistics import logistics_ui, logistics_server
+from seroepi.app._utils import ui_task, generate_temp_download
+
+
+# Constants ------------------------------------------------------------------------------------------------------------
+_package = 'seroepi'
+_app_name = f'{_package}-app'
+_meta = importlib.metadata.metadata(_package)
+__version__ = _meta.get("Version", "dev")
+
+# Dynamically extract author info mapped from pyproject.toml
+_author_raw = _meta.get("Author-email", "Tom Stanton <tomdstanton@gmail.com>")
+__author_name = _author_raw.split("<")[0].strip() if "<" in _author_raw else _author_raw
+__author_email = _author_raw.split("<")[1].replace(">", "").strip() if "<" in _author_raw else ""
+# Extract GitHub/Repository URL
+__github_url = f"https://github.com/tomdstanton/{_package}"
+if _meta.get_all("Project-URL"):
+    for url_str in _meta.get_all("Project-URL"):
+        if any(kw in url_str for kw in ["Repository", "Source", "GitHub"]):
+            __github_url = url_str.split(",")[1].strip()
+            break
+
+
+# UI -------------------------------------------------------------------------------------------------------------------
+@module.ui
+def home_ui():
+    readme = Path(__file__).parent.parent.parent.parent / "README.md"
+    return ui.div(
+        ui.card(
+            ui.markdown(readme.read_text()),
+            class_="p-4 shadow-sm border-0"
+        ),
+        class_="container mt-4",
+        style="max-width: 900px;"
+    )
+
+
+main_ui = ui.page_navbar(
+    # Notice we pass a unique ID string to each module function!
+    ui.nav_panel("Home 🏠", home_ui("tab_home")),
+    ui.nav_panel("1. Burden 🦠", burden_ui("tab_burden")),
+    ui.nav_panel("2.Formulation 💉", formulation_ui("tab_formulation")),
+    ui.nav_panel("3. Logistics 🌍", logistics_ui("tab_logistics")),
+
+    ui.nav_spacer(),  # Pushes everything after this to the right side of the navbar
+    ui.nav_control(
+        ui.div(
+            ui.tags.button(
+                "Workspace 💾",
+                class_="btn btn-sm btn-outline-primary mt-1 me-2 dropdown-toggle",
+                type="button",
+                **{"data-bs-toggle": "dropdown", "aria-expanded": "false"}
+            ),
+            ui.div(
+                ui.h6("Manage Workspace", class_="dropdown-header px-0 text-primary fw-bold"),
+                ui.download_button("btn_save_workspace", "Save Workspace (.sero)", class_="btn-outline-primary w-100 mb-2"),
+                ui.input_file("workspace_file", "Restore Workspace (.sero)", accept=[".sero"]),
+                class_="dropdown-menu dropdown-menu-end p-3 shadow border-0",
+                style="min-width: 260px;"
+            ),
+            class_="dropdown"
+        )
+    ),
+    ui.nav_control(
+        ui.div(
+            ui.tags.button(
+                "Session State 📋",
+                class_="btn btn-sm btn-outline-warning mt-1 dropdown-toggle",
+                type="button",
+                **{"data-bs-toggle": "dropdown", "aria-expanded": "false"}
+            ),
+            ui.div(
+                ui.h6("Workspace Summary", class_="dropdown-header px-0 text-primary fw-bold"),
+                ui.output_ui("session_state_summary"),
+                class_="dropdown-menu dropdown-menu-end p-3 shadow border-0",
+                style="min-width: 260px;"
+            ),
+            class_="dropdown"
+        )
+    ),
+    ui.nav_control(
+        ui.tags.button(
+            "Ask AI 🤖",
+            class_="btn btn-sm btn-outline-info mt-1",
+            type="button",
+            **{"data-bs-toggle": "offcanvas", "data-bs-target": "#chat_offcanvas"}
+        )
+    ),
+    ui.nav_control(ui.input_dark_mode(id="dark_mode")),
+
+    theme=shinyswatch.theme.pulse(), title=_app_name, id="main_nav", window_title=_app_name,
+    footer=ui.TagList(
+        ui.div(
+            ui.HTML(f"""
+                <div style="text-align: center; font-size: 0.85rem; color: #64748B; border-top: 1px solid #1E293B; padding-top: 15px; padding-bottom: 15px; margin-top: auto;">
+                    <strong>{_package}</strong> v{__version__} &bull; 
+                    Built by <a href="mailto:{__author_email}" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-envelope-fill"></i> {__author_name}</a> &bull; 
+                    <a href="{__github_url}" trait="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-github"></i> GitHub</a> &bull; 
+                    <a href="https://pypi.org/project/{_package}/" trait="_blank" style="color: #0EA5E9; text-decoration: none;"><i class="bi bi-box-seam-fill"></i> PyPI</a>
+                </div>
+            """),
+            class_="container-fluid d-flex flex-column justify-content-end"
+        )
+        ,
+        ui.div(
+            ui.div(
+                ui.h5(f"{_app_name} Assistant 🤖", class_="offcanvas-title"),
+                ui.tags.button(type="button", class_="btn-close text-reset", **{"data-bs-dismiss": "offcanvas"}),
+                class_="offcanvas-header"
+            ),
+            ui.div(
+                ui.chat_ui("ai_assistant"),
+                class_="offcanvas-body pb-3"
+            ),
+            class_="offcanvas offcanvas-end",
+            tabindex="-1",
+            id="chat_offcanvas",
+            style="width: 500px;",
+            **{"data-bs-scroll": "true", "data-bs-backdrop": "false"}  # Allows interacting with dashboard while open!
+        )
+    ),
+    header=ui.tags.head(
+        # 1. This unlocks the drag-and-drop Selectize plugin
+        ui.tags.script(src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"),
+
+        # 1b. Load Bootstrap Icons for the footer
+        ui.tags.link(rel="stylesheet",
+                     href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"),
+
+        # 2. Custom JS handler to dynamically show/hide navigation tabs
+        ui.tags.script("""
+        $(function() {
+            if (window.Shiny) {
+                Shiny.addCustomMessageHandler("toggle_tab", function(msg) {
+                    var link = document.querySelector('a[data-value="' + msg.tab + '"]');
+                    if (link) {
+                        link.parentElement.style.display = msg.show ? '' : 'none';
+                    }
+                });
+            }
+        });
+    """),
+
+        # 3. Your existing custom CSS
+        ui.tags.style("""
+            /* Premium spacing for inputs */
+            .shiny-input-container { margin-bottom: 15px; }
+
+            /* Clean typography for the navigation bar */
+            .nav-link { font-weight: 500; font-family: 'Inter', sans-serif; letter-spacing: 0.5px; }
+
+            /* Subtle glow effect on value boxes */
+            .bslib-value-box { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); border: 1px solid #334155; }
+
+            /* Remove padding from navset_card_tab bodies so panels fill completely */
+            .bslib-navs-card > .card-body { padding: 0 !important; }
+
+            /* Full-bleed dashboard: Remove gaps around layout_sidebar and page_navbar */
+            .bslib-page-navbar > .tab-content > .tab-pane { padding: 0 !important; }
+            .bslib-sidebar-layout { --bslib-sidebar-main-padding: 0 !important; }
+            .bslib-sidebar-layout > .main { padding: 0 !important; }
+            .bslib-navs-card { border: none !important; border-radius: 0 !important; }
+        """)
+    )
+)
+
+
+# Server ---------------------------------------------------------------------------------------------------------------
+def main_server(input, output, session):
+    app_state = {
+        "shared_df": reactive.Value(None),
+        "shared_dist": reactive.Value(None),
+        "shared_agg_df": reactive.Value(None),
+        "prev_results": reactive.Value(None),
+        "fitted_estimator": reactive.Value(None),
+        "pw_collections_cache": reactive.Value({}),
+        "baseline_res": reactive.Value(None),
+        "current_vaccine": reactive.Value(None),
+        "results_registry": reactive.Value({}),
+        "vaccine_registry": reactive.Value({}),
+        "dataset_registry": reactive.Value({})
+    }
+    burden_server("tab_burden", app_state=app_state)
+    formulation_server("tab_formulation", app_state=app_state)
+    logistics_server("tab_logistics", app_state=app_state)
+
+    @render.download(filename=f"{_package}_workspace.sero")
+    def btn_save_workspace():
+        export_state = {k: v.get() for k, v in app_state.items()}
+        return generate_temp_download(lambda p: joblib_dump(export_state, p), ".sero", "Workspace Export Error")
+
+    @reactive.Effect
+    @reactive.event(input.workspace_file)
+    async def load_workspace():
+        if not (file_info := input.workspace_file()):
+            return
+
+        async with ui_task("Workspace Restoration Error") as p:
+                p.set(message="Restoring Workspace...", value=50)
+                await sleep(0)
+
+                imported_state = await to_thread(joblib_load, Path(file_info[0]["datapath"]))
+
+                # Safely restore all reactive values that match our state dictionary
+                for key, r_val in app_state.items():
+                    if key in imported_state:
+                        r_val.set(imported_state[key])
+
+                p.set(message="Workspace Restored!", value=100)
+                ui.notification_show("Session successfully restored.", type="message")
+
+                # Expand the burden accordion to show data loaded (using the namespace ID!)
+                ui.update_accordion("tab_burden-burden_accordion", show="Cluster Generation 🕸️")
+
+    @render.ui
+    def session_state_summary():
+        df = app_state["shared_df"].get()
+        res = app_state["prev_results"].get()
+        est = app_state["fitted_estimator"].get()
+        vac = app_state["current_vaccine"].get()
+
+        elements = []
+
+        if ds_reg := app_state["dataset_registry"].get():
+            elements.append(ui.p(ui.tags.strong("Loaded Datasets: "), f"{len(ds_reg)} available", class_="mb-1 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Loaded Datasets: "), "None", class_="mb-1 text-muted small"))
+
+        if df is not None:
+            elements.append(ui.p(ui.tags.strong("Active Dataset: "), f"{len(df):,} rows, {len(df.columns)} cols", class_="mb-2 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Active Dataset: "), "None loaded", class_="mb-2 text-muted small"))
+
+        if res is not None:
+            strata = ", ".join(res.stratified_by) if res.stratified_by else "Global"
+            elements.append(ui.p(ui.tags.strong("Prevalence: "), f"'{res.trait}' by {strata}", class_="mb-2 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Prevalence: "), "Not calculated", class_="mb-2 text-muted small"))
+
+        if est is not None and getattr(est, 'is_fitted_', False):
+            est_name = type(est).__name__.replace('PrevalenceEstimator', '')
+            elements.append(ui.p(ui.tags.strong("Model: "), f"{est_name} (Fitted)", class_="mb-2 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Model: "), "No active model", class_="mb-2 text-muted small"))
+            
+        if vac is not None:
+            elements.append(ui.p(ui.tags.strong("Vaccine: "), f"{vac.max_valency}-valent formulation", class_="mb-2 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Vaccine: "), "Not generated", class_="mb-2 text-muted small"))
+
+        if reg := app_state["results_registry"].get():
+            elements.append(ui.p(ui.tags.strong("Cached Models: "), f"{len(reg)} runs available", class_="mb-1 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Cached Models: "), "None", class_="mb-1 text-muted small"))
+            
+        if v_reg := app_state["vaccine_registry"].get():
+            elements.append(ui.p(ui.tags.strong("Cached Vaccines: "), f"{len(v_reg)} formulations available", class_="mb-0 text-success small"))
+        else:
+            elements.append(ui.p(ui.tags.strong("Cached Vaccines: "), "None", class_="mb-0 text-muted small"))
+            
+        return ui.div(*elements)
+
+    # =====================================================================================
+    # AI ASSISTANT (Context-Aware Chatbot)
+    # =====================================================================================
+    chat = ui.Chat(id="ai_assistant")
+
+    @chat.on_user_submit
+    async def handle_chat_message():
+        # 1. Build the dynamic context from the current application state!
+        context_lines = []
+        if (df := app_state["shared_df"].get()) is not None:
+            context_lines.append(f"- Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns.")
+        if (res := app_state["prev_results"].get()) is not None:
+            # Pass a small preview of the results to the LLM so it can answer specific questions
+            context_lines.append(f"- Calculated Prevalence ({res.method}, Trait: {res.trait}):\n{res.data.head(5).to_string()}")
+        if (vac := app_state["current_vaccine"].get()) is not None:
+            context_lines.append(f"- Optimal Vaccine Formulation: {', '.join(vac.get_formulation())} (Valency {vac.max_valency})")
+        if reg := app_state["results_registry"].get():
+            context_lines.append(f"- Cached Models: {len(reg)} prevalence models available for vaccine formulation.")
+        if v_reg := app_state["vaccine_registry"].get():
+            context_lines.append(f"- Cached Vaccines: {len(v_reg)} formulations available for logistics.")
+        if ds_reg := app_state["dataset_registry"].get():
+            context_lines.append(f"- Loaded Datasets: {len(ds_reg)} datasets available in the registry.")
+
+        sys_prompt = (
+            "You are a world-class bioinformatics and epidemiology AI assistant. "
+            "You are embedded directly within the 'seroepi' Shiny dashboard. "
+            "Answer the user's questions based on the current state of their workspace data:\n\n"
+            + "\n".join(context_lines)
+        )
+
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            await chat.append_message("⚠️ `GEMINI_API_KEY` environment variable is missing. Please set it to use the AI assistant.")
+            return
+
+        # 2. Translate Shiny's message history to Gemini's expected format
+        gemini_messages = [
+            {"role": "model" if msg["role"] == "assistant" else "user", "parts": [{"text": msg["content"]}]}
+            for msg in chat.messages()
+        ]
+
+        client = genai.Client(api_key=api_key)
+
+        try:
+            # 3. Query the LLM via its async interface, injecting the system prompt via config
+            response = await client.aio.models.generate_content_stream(
+                model="gemini-2.5-flash",
+                contents=gemini_messages,
+                config={"system_instruction": sys_prompt}
+            )
+            
+            # Efficiently unwrap the Gemini text chunks for Shiny's streaming UI
+            async def stream_generator():
+                async for chunk in response:
+                    if chunk.text: yield chunk.text
+                    
+            await chat.append_message_stream(stream_generator())
+        except Exception as e:
+            await chat.append_message(f"Error communicating with AI: {str(e)}")
