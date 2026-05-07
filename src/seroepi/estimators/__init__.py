@@ -2,37 +2,51 @@
 Module for estimating trait prevalence, diversity and incidence among isolates.
 """
 
-from seroepi.estimators._base import (BaseEstimator, Estimates, PrevalenceEstimates, IncidenceEstimates,
-                                      AlphaDiversityEstimates, BetaDiversityEstimates)
-from seroepi.estimators._core import (FrequentistPrevalenceEstimator, AlphaDiversityEstimator,
-                                      BetaDiversityEstimator)
+from ._base import (
+    AlphaDiversityEstimates,
+    BaseEstimator,
+    BetaDiversityEstimates,
+    Estimates,
+    IncidenceEstimates,
+    PrevalenceEstimates,
+)
+from ._core import (
+    AlphaDiversityEstimator,
+    BetaDiversityEstimator,
+    UnpooledPrevalenceEstimator,
+)
 
-__all__ = [
-    "Estimates",
-    "PrevalenceEstimates",
-    "IncidenceEstimates",
+__all__ = (
     "AlphaDiversityEstimates",
-    "BetaDiversityEstimates",
-    "BaseEstimator",
-    "FrequentistPrevalenceEstimator",
     "AlphaDiversityEstimator",
+    "BaseEstimator",
+    "BetaDiversityEstimates",
     "BetaDiversityEstimator",
-]
+    "Estimates",
+    "IncidenceEstimates",
+    "PrevalenceEstimates",
+    "UnpooledPrevalenceEstimator",
+)
 
 try:
-    from seroepi.estimators._modelled import (
-        ModelledMixin, BayesianMixin,
+    from ._modelled import (
+        BayesianIncidenceEstimator,
+        BayesianMixin,
         BayesianPrevalenceEstimator,
-        RegressionPrevalenceEstimator,
+        GLMIncidenceEstimator,
+        GLMPrevalenceEstimator,
+        ModelledMixin,
         SpatialPrevalenceEstimator,
-        RegressionIncidenceEstimator,
     )
-    __all__.extend([
-        "ModelledMixin", "BayesianMixin"
+
+    __all__ += (
+        "BayesianIncidenceEstimator",
+        "BayesianMixin",
         "BayesianPrevalenceEstimator",
-        "RegressionPrevalenceEstimator",
+        "GLMIncidenceEstimator",
+        "GLMPrevalenceEstimator",
+        "ModelledMixin",
         "SpatialPrevalenceEstimator",
-        "RegressionIncidenceEstimator",
-    ])
+    )
 except ImportError:
     pass

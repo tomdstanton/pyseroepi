@@ -614,7 +614,7 @@ class EpiAccessor:
 
         # Unlike Prevalence, we do NOT drop rows where total_sequenced == 0.
         # A true 0 sequence volume is critical information for an epicurve gap.
-        inc_df = inc_df.rename(columns={'date_bin': temporal_col})
+        inc_df = inc_df.rename(columns={'date_bin': 'date'})
 
         # Standardize the trait column to 'trait'
         if trait_col:

@@ -9,13 +9,13 @@ from seroepi.constants import AggregationType
 
 
 # Classes --------------------------------------------------------------------------------------------------------------
-class FrequentistPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
+class UnpooledPrevalenceEstimator(BaseEstimator[PrevalenceEstimates]):
 
     Method = Literal['wilson', 'wald', 'agresti_coull', 'clopper_pearson', 'jeffreys']
 
     def __init__(self, method: Method = 'wilson', alpha: float = 0.05):
         self.method = method.lower()
-        self._method_label = f"frequentist_{self.method}"
+        self._method_label = f"unpooled_{self.method}"
         self._method_func = _FREQUENTIST_KERNELS.get(self.method, None)
         if self._method_func is None:
             raise ValueError(f"Unknown method: {self.method}. "

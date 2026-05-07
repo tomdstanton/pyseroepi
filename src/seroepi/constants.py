@@ -28,7 +28,7 @@ class PlotType(_UiEnum):
     COMPOSITION_BAR = auto()
     COMPOSITION_HEATMAP = auto()
     LONGITUDINAL_PREVALENCE = auto()
-    VACCINE_COVERAGE = auto()
+    CUMULATIVE_COVERAGE = auto()
     STABILITY_BUMP = auto()
     SPATIAL_SURFACE = auto()
     ALPHA_DIVERSITY = auto()
@@ -78,17 +78,26 @@ class GenotypeFlavour(_UiEnum):
 
 
 class EstimatorType(_UiEnum):
-    FREQUENTIST = auto()
+    UNPOOLED = auto()
+    GLM = auto()
     BAYESIAN = auto()
-    REGRESSION = auto()
     SPATIAL = auto()
+
+    @classmethod
+    def ui_labels(cls) -> dict[str, str]:
+        return {
+            cls.UNPOOLED.value: "Frequentist (Unpooled CIs)",
+            cls.GLM.value: "Frequentist (GLM)",
+            cls.BAYESIAN.value: "Bayesian (Hierarchical)",
+            cls.SPATIAL.value: "Bayesian (Spatial GP)",
+        }
 
     @property
     def class_name(self) -> str:
         return {
-            self.FREQUENTIST: "FrequentistPrevalenceEstimator",
+            self.UNPOOLED: "UnpooledPrevalenceEstimator",
             self.BAYESIAN: "BayesianPrevalenceEstimator",
-            self.REGRESSION: "RegressionPrevalenceEstimator",
+            self.GLM: "GLMPrevalenceEstimator",
             self.SPATIAL: "SpatialPrevalenceEstimator",
         }[self]
 
@@ -111,11 +120,11 @@ class TemporalResolution(_UiEnum):
 
     @property
     def pandas_offset(self) -> str:
-        """Returns the modern Pandas 2.2+ offset alias."""
+        """Returns the modern Pandas 2.2+ start-offset alias."""
         return {
-            self.YEAR: 'YE',
-            self.MONTH: 'ME',
-            self.WEEK: 'W',
+            self.YEAR: 'YS',
+            self.MONTH: 'MS',
+            self.WEEK: 'W-MON',
             self.DAY: 'D',
             self.UNKNOWN: ''
         }[self]

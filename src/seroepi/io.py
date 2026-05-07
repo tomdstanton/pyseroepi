@@ -86,7 +86,7 @@ class BaseGenotypeParser:
     @classmethod
     def get_parser(cls, flavour: Union[str, GenotypeFlavour]):
         flavour_val = flavour.value if isinstance(flavour, GenotypeFlavour) else flavour
-        if flavour_val == GenotypeFlavour.PATHOGENWATCH_KLEBORATE:
+        if flavour_val == "pathogenwatch-kleborate":
             return PathogenwatchKleborateParser
         return cls
 
@@ -449,7 +449,8 @@ class PathogenwatchGenomeParser(BaseGenotypeParser):
             cls,
             genotype_df: pd.DataFrame,
             meta_df: Optional[pd.DataFrame] = None,
-            meta_kwargs: dict = None
+            meta_kwargs: dict = None,
+            dataset_name: str = "Unknown Dataset"
     ) -> pd.DataFrame:
         # Clean column names to remove JSON paths and replace spaces
         genotype_df = genotype_df.rename(columns=lambda c: str(c).split('/')[-1].replace(' ', '_'))
@@ -458,4 +459,4 @@ class PathogenwatchGenomeParser(BaseGenotypeParser):
         # We drop the duplicates so Pandas doesn't return DataFrames when we select a single column string.
         genotype_df = genotype_df.loc[:, ~genotype_df.columns.duplicated()]
         
-        return super().parse(genotype_df, meta_df=meta_df, meta_kwargs=meta_kwargs)
+        return super().parse(genotype_df, meta_df=meta_df, meta_kwargs=meta_kwargs, dataset_name=dataset_name)

@@ -374,7 +374,7 @@ class BayesianPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pr
         )
 
 
-class RegressionPrevalenceEstimator(ModelledMixin, BaseEstimator[PrevalenceEstimates]):
+class GLMPrevalenceEstimator(ModelledMixin, BaseEstimator[PrevalenceEstimates]):
     """
     Frequentist binomial GLM for prevalence estimation.
 
@@ -383,7 +383,7 @@ class RegressionPrevalenceEstimator(ModelledMixin, BaseEstimator[PrevalenceEstim
     """
     def __init__(self, target_event: str = 'event', target_n: str = 'n'):
         """
-        Initializes the RegressionPrevalenceEstimator.
+        Initializes the GLMPrevalenceEstimator.
 
         Args:
             target_event: Column name for event counts. Defaults to 'event'.
@@ -393,7 +393,7 @@ class RegressionPrevalenceEstimator(ModelledMixin, BaseEstimator[PrevalenceEstim
         self.target_n = target_n
         self._method_label = "binomial_glm"
 
-    def fit(self, agg_df: pd.DataFrame) -> 'RegressionPrevalenceEstimator':
+    def fit(self, agg_df: pd.DataFrame) -> 'GLMPrevalenceEstimator':
         """Fits the binomial GLM."""
         self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n, 'trait'])
         
@@ -590,7 +590,7 @@ class SpatialPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pre
         )
 
 
-class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimates]):
+class GLMIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimates]):
     """
     Negative Binomial GLM for time-series incidence estimation.
 
@@ -598,19 +598,21 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
     adjusting for sequencing volume (relative incidence).
 
     Examples:
-        >>> from seroepi.estimators import RegressionIncidenceEstimator
-        >>> estimator = RegressionIncidenceEstimator(use_relative_incidence=True)
+        >>> from seroepi.estimators import GLMIncidenceEstimator
+        >>> estimator = GLMIncidenceEstimator(use_relative_incidence=True)
         >>> # result = estimator.calculate(inc_df)
     """
-    def __init__(self, use_relative_incidence: bool = True):
+    def __init__(self, use_relative_incidence: bool = True, forecast_horizon: int = 0):
         """
-        Initializes the RegressionIncidenceEstimator.
+        Initializes the GLMIncidenceEstimator.
 
         Args:
             use_relative_incidence: If True, models cases adjusting for total
                 sequencing volume (offset). If False, models absolute counts.
+            forecast_horizon: Number of future time steps to project. Defaults to 0.
         """
         self.use_relative_incidence = use_relative_incidence
+        self.forecast_horizon = forecast_horizon
         self._method_label = "neg_binomial_glm"
 
         # Internal state tracking
@@ -618,7 +620,7 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
         self.strata_ = []
         self.meta_ = {}
 
-    def fit(self, inc_df: pd.DataFrame) -> 'RegressionIncidenceEstimator':
+    def fit(self, inc_df: pd.DataFrame) -> 'GLMIncidenceEstimator':
         """Fits the Negative Binomial GLM to each stratum."""
         self.meta_ = inc_df.attrs.get("metric_meta", {})
         target_col = self.meta_.get("trait")
@@ -645,16 +647,16 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
                 continue
 
             # Create a numeric Time Step for the slope
-            time_deltas = df_model['date'] - df_model['date'].min()
+            min_date = df_model['date'].min()
 
             if self.freq_ == TemporalResolution.MONTH.value or self.freq_.startswith('M'):
-                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'M'))
+                df_model['time_step'] = (df_model['date'].dt.year - min_date.year) * 12 + (df_model['date'].dt.month - min_date.month)
             elif self.freq_ == TemporalResolution.WEEK.value or self.freq_.startswith('W'):
-                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'W'))
+                df_model['time_step'] = (df_model['date'] - min_date).dt.days // 7
             elif self.freq_ == TemporalResolution.YEAR.value or self.freq_.startswith('Y'):
-                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'Y'))
+                df_model['time_step'] = df_model['date'].dt.year - min_date.year
             else:
-                df_model['time_step'] = np.round(time_deltas / np.timedelta64(1, 'D'))
+                df_model['time_step'] = (df_model['date'] - min_date).dt.days
 
             Y = df_model['variant_count']
             X = sm.add_constant(df_model['time_step'])
@@ -673,14 +675,24 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
         return self
 
     def predict(self, inc_df: pd.DataFrame) -> IncidenceEstimates:
-        """Extracts Incidence Rate Ratios (IRR) and intervals."""
+        """Extracts Incidence Rate Ratios (IRR) and forecasts trends."""
         self.check_is_fitted()
 
-        group_cols = self.strata_ + ['trait'] if 'trait' in inc_df.columns else self.strata_
-        groups = inc_df.groupby(group_cols, observed=True) if group_cols else [('Global', inc_df)]
-        results = []
+        freq_str = self.freq_
+        try:
+            freq = TemporalResolution(freq_str).pandas_offset
+            if not freq: freq = 'MS'
+        except ValueError:
+            freq = 'MS'
 
-        for name, _ in groups:
+        group_cols = self.strata_ + ['trait'] if 'trait' in inc_df.columns else self.strata_
+        # Sort to ensure chronological order for time-steps
+        groups = inc_df.sort_values('date').groupby(group_cols, observed=True) if group_cols else [('Global', inc_df)]
+        
+        results = []
+        all_pred_dfs = []
+
+        for name, group in groups:
             fit = self.fit_results_.get(name)
 
             row = {k: v for k, v in zip(group_cols, name)} if group_cols and isinstance(name, tuple) else {}
@@ -692,6 +704,12 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
                     'IRR': np.nan, 'IRR_lower': np.nan, 'IRR_upper': np.nan,
                     'p_value': np.nan, 'status': 'Failed/Insufficient Data'
                 })
+                
+                df_pred = group.copy()
+                df_pred['estimate'] = np.nan
+                df_pred['lower'] = np.nan
+                df_pred['upper'] = np.nan
+                all_pred_dfs.append(df_pred)
             else:
                 coef = fit.params.get('time_step', 0)
                 p_val = fit.pvalues.get('time_step', 1.0)
@@ -705,10 +723,54 @@ class RegressionIncidenceEstimator(ModelledMixin, BaseEstimator[IncidenceEstimat
                     'p_value': p_val,
                     'status': 'Converged'
                 })
+                
+                # --- Generate Predictions & Forecasts ---
+                df_pred = group.copy()
+                min_date = df_pred['date'].min()
+                
+                # Append future horizon rows if required
+                if getattr(self, 'forecast_horizon', 0) > 0:
+                    max_date = df_pred['date'].max()
+                    future_dates = pd.date_range(start=max_date, periods=self.forecast_horizon + 1, freq=freq)[1:]
+                    future_df = pd.DataFrame({'date': future_dates})
+                    
+                    if group_cols:
+                        for col in group_cols:
+                            future_df[col] = name[group_cols.index(col)] if isinstance(name, tuple) else name
+                    
+                    # Use the mean historical sequencing volume for relative adjustments in the future
+                    future_df['total_sequenced'] = df_pred['total_sequenced'].mean()
+                    future_df['variant_count'] = 0
+                    
+                    df_pred = pd.concat([df_pred, future_df], ignore_index=True)
+                
+                # Recalculate the mathematical time_step for ALL rows
+                if self.freq_ == TemporalResolution.MONTH.value or self.freq_.startswith('M'):
+                    df_pred['time_step'] = (df_pred['date'].dt.year - min_date.year) * 12 + (df_pred['date'].dt.month - min_date.month)
+                elif self.freq_ == TemporalResolution.WEEK.value or self.freq_.startswith('W'):
+                    df_pred['time_step'] = (df_pred['date'] - min_date).dt.days // 7
+                elif self.freq_ == TemporalResolution.YEAR.value or self.freq_.startswith('Y'):
+                    df_pred['time_step'] = df_pred['date'].dt.year - min_date.year
+                else:
+                    df_pred['time_step'] = (df_pred['date'] - min_date).dt.days
+
+                # Generate predictions
+                X = sm.add_constant(df_pred['time_step'], has_constant='add')
+                offset = np.log(df_pred['total_sequenced'].clip(lower=1e-8)) if self.use_relative_incidence else None
+                
+                pred_res = fit.get_prediction(X, offset=offset).summary_frame(alpha=0.05)
+                df_pred['estimate'] = pred_res['mean'].values
+                df_pred['lower'] = pred_res['mean_ci_lower'].values
+                df_pred['upper'] = pred_res['mean_ci_upper'].values
+                
+                all_pred_dfs.append(df_pred)
+                
             results.append(row)
 
+        final_df = pd.concat(all_pred_dfs, ignore_index=True) if all_pred_dfs else inc_df.copy()
+
         return IncidenceEstimates(
-            data=inc_df.copy(),
+            data=final_df,
             stratified_by=self.strata_,
             adjusted_for=self.meta_.get("adjusted_for", 'unknown'),
             trait=self.meta_.get("trait", "unknown"),

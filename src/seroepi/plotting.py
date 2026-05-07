@@ -450,7 +450,8 @@ class LongitudinalPrevalencePlotter(BasePlotter):
             fillcolor=cls._CI_COLOUR,
             line=dict(color='rgba(255,255,255,0)'),
             hoverinfo="skip",
-            showlegend=False
+            showlegend=False,
+            legendgroup="Prevalence"
         ))
 
         # Add the main trend line with neon ring markers
@@ -460,7 +461,8 @@ class LongitudinalPrevalencePlotter(BasePlotter):
             line=dict(color=cls._MAIN_COLOUR, width=3),
             marker=dict(size=8, color=cls._MAIN_COLOUR),
             name="Prevalence",
-            hovertemplate="<b>Date</b>: %{x}<br><b>Prevalence</b>: %{y:.2%}<extra></extra>"
+            hovertemplate="<b>Date</b>: %{x}<br><b>Prevalence</b>: %{y:.2%}<extra></extra>",
+            legendgroup="Prevalence"
         ))
 
         return cls.apply_theme(fig.update_layout(
@@ -470,17 +472,18 @@ class LongitudinalPrevalencePlotter(BasePlotter):
         ))
 
 
-class VaccineCoveragePlotter(BasePlotter):
+class CumulativeCoveragePlotter(BasePlotter):
+    """
+    Calculates cumulative population coverage.
+    Crucial for designing multivalent vaccines (e.g., K-locus targeting).
+    """
     SUPPORTED_TYPES = (estimators.PrevalenceEstimates, dict)
 
     @classmethod
     def render(cls, result: Union['estimators.PrevalenceEstimates', dict],  max_valencies: int = None, **kwargs):
         if not cls.can_render(result):
             raise TypeError(f"{cls.__name__} does not support {type(result).__name__}.")
-        """
-        Calculates cumulative population coverage.
-        Crucial for designing multivalent vaccines (e.g., K-locus targeting).
-        """
+
         if isinstance(result, dict):
             res = result.get("res")
             formulation = result.get("formulation")
@@ -492,7 +495,6 @@ class VaccineCoveragePlotter(BasePlotter):
             raise ValueError("Cumulative coverage strictly requires compositional prevalence estimates.")
 
         data = res.data.copy()
-        trait_col = 'trait'
         
         # Idiomatic SciPy: Retrieve the exact Z-score for a 95% two-sided interval (~1.96)
         z_score = norm.ppf(0.975)
@@ -536,19 +538,21 @@ class VaccineCoveragePlotter(BasePlotter):
                 opacity=0.2,
                 line=dict(color='rgba(255,255,255,0)'),
                 hoverinfo="skip",
-                showlegend=False
+                showlegend=False,
+                legendgroup="Cumulative Population Coverage"
             ))
 
             fig.add_trace(go.Scatter(
                 x=target_order, y=cum_prop,
                 mode='lines+markers',
-                name='Global Coverage',
+                name='Cumulative Population Coverage',
                 line=dict(color=cls._MAIN_COLOUR, width=3),
                 marker=dict(size=8, color=cls._MAIN_COLOUR),
                 customdata=np.column_stack((cum_lower.values, cum_upper.values)),
-                hovertemplate="<b>%{x}</b><br>Cumulative Coverage: %{y:.1%}<br>95% CI: %{customdata[0]:.1%} - %{customdata[1]:.1%}<extra></extra>"
+                hovertemplate="<b>%{x}</b><br>Cumulative Coverage: %{y:.1%}<br>95% CI: %{customdata[0]:.1%} - %{customdata[1]:.1%}<extra></extra>",
+                legendgroup="Cumulative Population Coverage"
             ))
-            strata_label = "Global Baseline"
+            strata_label = "Baseline"
         else:
             # --- STRATIFIED COVERAGE ---
             color_col = group_cols[0]
@@ -575,7 +579,8 @@ class VaccineCoveragePlotter(BasePlotter):
                     opacity=0.2,
                     line=dict(color='rgba(255,255,255,0)'),
                     hoverinfo="skip",
-                    showlegend=False
+                    showlegend=False,
+                    legendgroup=str(stratum)
                 ))
                 
                 fig.add_trace(go.Scatter(
@@ -585,11 +590,12 @@ class VaccineCoveragePlotter(BasePlotter):
                     line=dict(color=color, width=2),
                     marker=dict(size=6, color=color),
                     customdata=np.column_stack((cum_lower.values, cum_upper.values)),
-                    hovertemplate=f"<b>%{{x}}</b><br>{cls._clean_label(color_col)}: {stratum}<br>Cumulative Coverage: %{{y:.1%}}<br>95% CI: %{{customdata[0]:.1%}} - %{{customdata[1]:.1%}}<extra></extra>"
+                    hovertemplate=f"<b>%{{x}}</b><br>{cls._clean_label(color_col)}: {stratum}<br>Cumulative Coverage: %{{y:.1%}}<br>95% CI: %{{customdata[0]:.1%}} - %{{customdata[1]:.1%}}<extra></extra>",
+                    legendgroup=str(stratum)
                 ))
 
         return cls.apply_theme(fig.update_layout(
-            title=f"<b>Cumulative Vaccine Coverage</b><br><sup>Targeting top {len(target_order)} {cls._clean_label(res.trait)} variants | {strata_label}</sup>",
+            title=f"<b>Cumulative Coverage</b><br><sup>Targeting top {len(target_order)} {cls._clean_label(res.trait)} variants | {strata_label}</sup>",
             xaxis=dict(title="Variant added to formulation", tickangle=45),
             yaxis=dict(title='Cumulative Population Coverage', tickformat='.0%', range=[0, 1.05]),
             hovermode="x unified"
@@ -851,8 +857,8 @@ class StabilityBumpPlotter(BasePlotter):
                 y=y_ranks,
                 mode='lines+markers',
                 name=str(target),
-                line=dict(width=4),  # Removed hardcoded color to enable Plotly colorway
-                marker=dict(size=10),
+                line=dict(width=2),  # Thinner lines to match coverage plots
+                marker=dict(size=8),
                 hovertemplate="<b>Holdout: %{x}</b><br>Rank: %{y}<extra></extra>"
             ))
 
@@ -1072,7 +1078,7 @@ _PLOTTER_MAP = {
     PlotType.FOREST: ForestPlotter,
     PlotType.EPICURVE: EpicurvePlotter,
     PlotType.LONGITUDINAL_PREVALENCE: LongitudinalPrevalencePlotter,
-    PlotType.VACCINE_COVERAGE: VaccineCoveragePlotter,
+    PlotType.CUMULATIVE_COVERAGE: CumulativeCoveragePlotter,
     PlotType.CHOROPLETH: ChoroplethPlotter,
     PlotType.SPATIAL_SURFACE: SpatialSurfacePlotter,
     PlotType.ALPHA_DIVERSITY: AlphaDiversityPlotter,

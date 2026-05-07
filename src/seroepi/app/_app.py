@@ -9,7 +9,8 @@ import shinyswatch
 
 from google import genai
 
-from seroepi.app._burden import burden_ui, burden_server
+from seroepi.app._dataset import dataset_ui, dataset_server
+from seroepi.app._prevalence import prevalence_ui, prevalence_server
 from seroepi.app._formulation import formulation_ui, formulation_server
 from seroepi.app._logistics import logistics_ui, logistics_server
 from seroepi.app._utils import ui_task, generate_temp_download
@@ -51,9 +52,10 @@ def home_ui():
 main_ui = ui.page_navbar(
     # Notice we pass a unique ID string to each module function!
     ui.nav_panel("Home 🏠", home_ui("tab_home")),
-    ui.nav_panel("1. Burden 🦠", burden_ui("tab_burden")),
-    ui.nav_panel("2.Formulation 💉", formulation_ui("tab_formulation")),
-    ui.nav_panel("3. Logistics 🌍", logistics_ui("tab_logistics")),
+    ui.nav_panel("1. Dataset 💽", dataset_ui("tab_dataset")),
+    ui.nav_panel("2. Prevalence 🦠", prevalence_ui("tab_prevalence")),
+    ui.nav_panel("3. Formulation 💉", formulation_ui("tab_formulation")),
+    ui.nav_panel("4. Logistics 🌍", logistics_ui("tab_logistics")),
 
     ui.nav_spacer(),  # Pushes everything after this to the right side of the navbar
     ui.nav_control(
@@ -68,6 +70,25 @@ main_ui = ui.page_navbar(
                 ui.h6("Manage Workspace", class_="dropdown-header px-0 text-primary fw-bold"),
                 ui.download_button("btn_save_workspace", "Save Workspace (.sero)", class_="btn-outline-primary w-100 mb-2"),
                 ui.input_file("workspace_file", "Restore Workspace (.sero)", accept=[".sero"]),
+                class_="dropdown-menu dropdown-menu-end p-3 shadow border-0",
+                style="min-width: 260px;"
+            ),
+            class_="dropdown"
+        )
+    ),
+    ui.nav_control(
+        ui.div(
+            ui.tags.button(
+                "Active Context 📚",
+                class_="btn btn-sm btn-outline-success mt-1 me-2 dropdown-toggle",
+                type="button",
+                **{"data-bs-toggle": "dropdown", "aria-expanded": "false"}
+            ),
+            ui.div(
+                ui.h6("Select Active Items", class_="dropdown-header px-0 text-primary fw-bold"),
+                ui.input_select("global_dataset", "Dataset", choices={"": "None"}),
+                ui.input_select("global_run", "Prevalence Run", choices={"": "None"}),
+                ui.input_select("global_vac", "Formulation", choices={"": "None"}),
                 class_="dropdown-menu dropdown-menu-end p-3 shadow border-0",
                 style="min-width: 260px;"
             ),
@@ -188,12 +209,88 @@ def main_server(input, output, session):
         "fitted_estimator": reactive.Value(None),
         "pw_collections_cache": reactive.Value({}),
         "baseline_res": reactive.Value(None),
-        "current_vaccine": reactive.Value(None),
+        "current_formulation": reactive.Value(None),
         "results_registry": reactive.Value({}),
-        "vaccine_registry": reactive.Value({}),
-        "dataset_registry": reactive.Value({})
+        "formulation_registry": reactive.Value({}),
+        "dataset_registry": reactive.Value({}),
+        "active_dataset_name": reactive.Value(None),
+        "active_run_name": reactive.Value(None),
+        "active_vac_name": reactive.Value(None)
     }
-    burden_server("tab_burden", app_state=app_state)
+    
+    # --- GLOBAL REGISTRY ROUTERS ---
+    @reactive.Effect
+    def sync_global_dataset_dropdown():
+        reg = app_state["dataset_registry"].get()
+        active = app_state["active_dataset_name"].get()
+        if not reg:
+            ui.update_select("global_dataset", choices={"": "None"}, selected="")
+            return
+        choices = {k: f"📊 {k}" for k in reg.keys()}
+        selected = active if active in choices else list(choices.keys())[-1]
+        ui.update_select("global_dataset", choices=choices, selected=selected)
+
+    @reactive.Effect
+    @reactive.event(input.global_dataset)
+    def handle_global_dataset_change():
+        selected = input.global_dataset()
+        reg = app_state["dataset_registry"].get()
+        if selected and reg and selected in reg:
+            ds_dict = reg[selected]
+            app_state["active_dataset_name"].set(selected)
+            if app_state["shared_df"].get() is not ds_dict["df"]:
+                app_state["shared_df"].set(ds_dict["df"])
+                app_state["shared_dist"].set(ds_dict["dist"])
+                app_state["shared_trans_dist"].set(ds_dict["trans_dist"])
+                app_state["shared_agg_df"].set(None)
+
+    @reactive.Effect
+    def sync_global_run_dropdown():
+        reg = app_state["results_registry"].get()
+        active = app_state["active_run_name"].get()
+        if not reg:
+            ui.update_select("global_run", choices={"": "None"}, selected="")
+            return
+        choices = {k: f"🎯 {k}" for k in reg.keys()}
+        selected = active if active in choices else list(choices.keys())[-1]
+        ui.update_select("global_run", choices=choices, selected=selected)
+
+    @reactive.Effect
+    @reactive.event(input.global_run)
+    def handle_global_run_change():
+        selected = input.global_run()
+        reg = app_state["results_registry"].get()
+        if selected and reg and selected in reg:
+            run_dict = reg[selected]
+            app_state["active_run_name"].set(selected)
+            if app_state["prev_results"].get() is not run_dict["res"]:
+                app_state["prev_results"].set(run_dict["res"])
+                app_state["fitted_estimator"].set(run_dict["est"])
+                app_state["shared_agg_df"].set(run_dict["agg_df"])
+
+    @reactive.Effect
+    def sync_global_vac_dropdown():
+        reg = app_state["formulation_registry"].get()
+        active = app_state["active_vac_name"].get()
+        if not reg:
+            ui.update_select("global_vac", choices={"": "None"}, selected="")
+            return
+        choices = {k: f"💉 {k}" for k in reg.keys()}
+        selected = active if active in choices else list(choices.keys())[-1]
+        ui.update_select("global_vac", choices=choices, selected=selected)
+
+    @reactive.Effect
+    @reactive.event(input.global_vac)
+    def handle_global_vac_change():
+        selected = input.global_vac()
+        reg = app_state["formulation_registry"].get()
+        if selected and reg and selected in reg:
+            app_state["active_vac_name"].set(selected)
+            if app_state["current_formulation"].get() is not reg[selected]:
+                app_state["current_formulation"].set(reg[selected])
+
+    dataset_server("tab_dataset", app_state=app_state)
+    prevalence_server("tab_prevalence", app_state=app_state)
     formulation_server("tab_formulation", app_state=app_state)
     logistics_server("tab_logistics", app_state=app_state)
 
@@ -222,15 +319,15 @@ def main_server(input, output, session):
                 p.set(message="Workspace Restored!", value=100)
                 ui.notification_show("Session successfully restored.", type="message")
 
-                # Expand the burden accordion to show data loaded (using the namespace ID!)
-                ui.update_accordion("tab_burden-burden_accordion", show="Cluster Generation 🕸️")
+                # Expand the prevalence accordion to show data loaded (using the namespace ID!)
+                ui.update_accordion("tab_prevalence-prevalence_accordion", show="Cluster Generation 🕸️")
 
     @render.ui
     def session_state_summary():
         df = app_state["shared_df"].get()
         res = app_state["prev_results"].get()
         est = app_state["fitted_estimator"].get()
-        vac = app_state["current_vaccine"].get()
+        vac = app_state["current_formulation"].get()
 
         elements = []
 
@@ -257,19 +354,19 @@ def main_server(input, output, session):
             elements.append(ui.p(ui.tags.strong("Model: "), "No active model", class_="mb-2 text-muted small"))
             
         if vac is not None:
-            elements.append(ui.p(ui.tags.strong("Vaccine: "), f"{vac.max_valency}-valent formulation", class_="mb-2 text-success small"))
+            elements.append(ui.p(ui.tags.strong("Formulation: "), f"{vac.max_valency}-valent formulation", class_="mb-2 text-success small"))
         else:
-            elements.append(ui.p(ui.tags.strong("Vaccine: "), "Not generated", class_="mb-2 text-muted small"))
+            elements.append(ui.p(ui.tags.strong("Formulation: "), "Not generated", class_="mb-2 text-muted small"))
 
         if reg := app_state["results_registry"].get():
             elements.append(ui.p(ui.tags.strong("Cached Models: "), f"{len(reg)} runs available", class_="mb-1 text-success small"))
         else:
             elements.append(ui.p(ui.tags.strong("Cached Models: "), "None", class_="mb-1 text-muted small"))
             
-        if v_reg := app_state["vaccine_registry"].get():
-            elements.append(ui.p(ui.tags.strong("Cached Vaccines: "), f"{len(v_reg)} formulations available", class_="mb-0 text-success small"))
+        if v_reg := app_state["formulation_registry"].get():
+            elements.append(ui.p(ui.tags.strong("Cached Formulations: "), f"{len(v_reg)} formulations available", class_="mb-0 text-success small"))
         else:
-            elements.append(ui.p(ui.tags.strong("Cached Vaccines: "), "None", class_="mb-0 text-muted small"))
+            elements.append(ui.p(ui.tags.strong("Cached Formulations: "), "None", class_="mb-0 text-muted small"))
             
         return ui.div(*elements)
 
@@ -280,35 +377,53 @@ def main_server(input, output, session):
 
     @chat.on_user_submit
     async def handle_chat_message():
-        # 1. Build the dynamic context from the current application state!
-        context_lines = []
-        if (df := app_state["shared_df"].get()) is not None:
-            context_lines.append(f"- Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns.")
-        if (res := app_state["prev_results"].get()) is not None:
-            # Pass a small preview of the results to the LLM so it can answer specific questions
-            context_lines.append(f"- Calculated Prevalence ({res.method}, Trait: {res.trait}):\n{res.data.head(5).to_string()}")
-        if (vac := app_state["current_vaccine"].get()) is not None:
-            context_lines.append(f"- Optimal Vaccine Formulation: {', '.join(vac.get_formulation())} (Valency {vac.max_valency})")
-        if reg := app_state["results_registry"].get():
-            context_lines.append(f"- Cached Models: {len(reg)} prevalence models available for vaccine formulation.")
-        if v_reg := app_state["vaccine_registry"].get():
-            context_lines.append(f"- Cached Vaccines: {len(v_reg)} formulations available for logistics.")
-        if ds_reg := app_state["dataset_registry"].get():
-            context_lines.append(f"- Loaded Datasets: {len(ds_reg)} datasets available in the registry.")
+        # Build a Structured Markdown Payload of the Analytical Workspace
+        sys_prompt_parts = [
+            "You are a world-class bioinformatics and epidemiology AI assistant. ",
+            "You are embedded directly within the 'seroepi' Shiny dashboard. ",
+            "Answer the user's questions based strictly on the current state of their analytical workspace below:\n",
+            "### WORKSPACE STATE\n"
+        ]
 
-        sys_prompt = (
-            "You are a world-class bioinformatics and epidemiology AI assistant. "
-            "You are embedded directly within the 'seroepi' Shiny dashboard. "
-            "Answer the user's questions based on the current state of their workspace data:\n\n"
-            + "\n".join(context_lines)
-        )
+        if (df := app_state["shared_df"].get()) is not None:
+            sys_prompt_parts.append(f"**Active Dataset**: {df.shape[0]} rows, {df.shape[1]} columns.")
+            
+        if (res := app_state["prev_results"].get()) is not None:
+            sys_prompt_parts.append(f"**Active Prevalence Run** ({res.method}, Trait: '{res.trait}'):\n```text\n{res.data.head(10).to_string()}\n```")
+            
+        if (est := app_state["fitted_estimator"].get()) is not None and getattr(est, 'is_fitted_', False):
+            sys_prompt_parts.append(f"**Active Model**: {type(est).__name__}")
+            if hasattr(est, 'diagnostics'):
+                try:
+                    diag_df = est.diagnostics()
+                    sys_prompt_parts.append(f"- **MCMC Diagnostics**:\n```text\n{diag_df.to_string()}\n```")
+                except Exception:
+                    pass
+                    
+        if (vac := app_state["current_formulation"].get()) is not None:
+            sys_prompt_parts.append(f"**Active Formulation Formulation** ({vac.max_valency}-valent):")
+            sys_prompt_parts.append(f"- **Targets**: {', '.join(vac.get_formulation())}")
+            sys_prompt_parts.append(f"- **Top Rankings**:\n```text\n{vac.rankings.head(vac.max_valency).to_string(index=False)}\n```")
+            if not vac.stability_metrics.empty:
+                sys_prompt_parts.append(f"- **LOO Stability Metrics**:\n```text\n{vac.stability_metrics.to_string()}\n```")
+                
+        if reg := app_state["results_registry"].get():
+            sys_prompt_parts.append(f"**Cached Prevalence Runs**: {', '.join(reg.keys())}")
+            
+        if v_reg := app_state["formulation_registry"].get():
+            sys_prompt_parts.append(f"**Cached Formulations**: {', '.join(v_reg.keys())}")
+            
+        if ds_reg := app_state["dataset_registry"].get():
+            sys_prompt_parts.append(f"**Loaded Datasets**: {', '.join(ds_reg.keys())}")
+
+        sys_prompt = "\n".join(sys_prompt_parts)
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             await chat.append_message("⚠️ `GEMINI_API_KEY` environment variable is missing. Please set it to use the AI assistant.")
             return
 
-        # 2. Translate Shiny's message history to Gemini's expected format
+        # Translate Shiny's message history to Gemini's expected format
         gemini_messages = [
             {"role": "model" if msg["role"] == "assistant" else "user", "parts": [{"text": msg["content"]}]}
             for msg in chat.messages()
