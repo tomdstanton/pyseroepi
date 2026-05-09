@@ -1,4 +1,4 @@
-# 🦠💉🌍 seroepi
+# 🦠💉🌍 `seroepi`
 
 `seroepi` is a comprehensive Python toolkit and interactive Shiny dashboard for the epidemiological, geospatial, and genotypic analysis of pathogen isolates.
 
