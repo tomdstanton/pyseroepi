@@ -111,7 +111,7 @@ def dataset_ui():
                         ),
                         width=280
                     ),
-                    output_widget("cluster_network_plot")
+                    ui.output_ui("network_plot_content")
                 ),
                 value="tab_cluster_network"
             ),
@@ -370,6 +370,14 @@ def dataset_server(input, output, session, app_state: dict):
         return dt_download_ui("dashboard", "Global Dataset Preview")
 
     dt_download_server("dashboard", data_callable=lambda: shared_df.get(), filename="global_dataset.csv")
+
+    @render.ui
+    def network_plot_content():
+        dist = shared_dist.get()
+        trans_dist = shared_trans_dist.get()
+        if dist is None and trans_dist is None:
+            return ui.div("Calculate genomic or transmission clusters to view the network.", class_="text-center mt-5 text-muted fs-4")
+        return output_widget("cluster_network_plot")
 
     @reactive.Calc
     async def network_layout():

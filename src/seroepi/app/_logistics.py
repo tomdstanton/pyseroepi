@@ -41,9 +41,9 @@ def logistics_ui():
         # Main Dashboard Array
         ui.navset_card_tab(
             ui.nav_panel("General Coverage 📊", ui.output_ui("logistics_general_content"), value="tab_logistics_general"),
-            ui.nav_panel("Spatial Coverage 🌍", output_widget("logistics_spatial_plot"), value="tab_logistics_spatial"),
-            ui.nav_panel("Historical Coverage 📈", safe_plot_ui("logistics_temporal_plot"), value="tab_logistics_temporal"),
-            ui.nav_panel("Longevity Forecast 🔮", output_widget("logistics_longevity_plot"), value="tab_logistics_longevity"),
+            ui.nav_panel("Spatial Coverage 🌍", ui.output_ui("logistics_spatial_content"), value="tab_logistics_spatial"),
+            ui.nav_panel("Historical Coverage 📈", ui.output_ui("logistics_temporal_content"), value="tab_logistics_temporal"),
+            ui.nav_panel("Longevity Forecast 🔮", ui.output_ui("logistics_longevity_content"), value="tab_logistics_longevity"),
             id="logistics_tabs"
         )
     )
@@ -102,6 +102,32 @@ def logistics_server(input, output, session, app_state: dict):
         if current_formulation.get() is None:
             return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
         return safe_plot_ui("logistics_general_plot")
+
+    @render.ui
+    def logistics_spatial_content():
+        if current_formulation.get() is None:
+            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
+        df = shared_df.get()
+        if df is None or not df.epi.has_spatial:
+            return ui.div("Spatial metadata is required to view spatial coverage.", class_="text-center mt-5 text-muted fs-4")
+        return output_widget("logistics_spatial_plot")
+
+    @render.ui
+    def logistics_temporal_content():
+        if current_formulation.get() is None:
+            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
+        df = shared_df.get()
+        if df is None or not df.epi.has_temporal:
+            return ui.div("Temporal metadata is required to view historical coverage.", class_="text-center mt-5 text-muted fs-4")
+        return safe_plot_ui("logistics_temporal_plot")
+
+    @render.ui
+    def logistics_longevity_content():
+        if current_formulation.get() is None:
+            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
+        if shared_forecast.get() is None:
+            return ui.div("Run longevity forecasting in the sidebar to view this plot.", class_="text-center mt-5 text-muted fs-4")
+        return output_widget("logistics_longevity_plot")
 
     @reactive.Calc
     def general_coverage_res():

@@ -90,7 +90,7 @@ def prevalence_ui():
                         ui.download_button("btn_download_plot", "Download Plot", class_="btn-outline-primary w-100"),
                         width=280
                     ),
-                    safe_plot_ui("prev_plot")
+                    ui.output_ui("prev_plot_content")
                 ),
                 value="tab_prevalence_plot"
             ),
@@ -449,6 +449,12 @@ def prevalence_server(input, output, session, app_state: dict):
 
     dt_download_server("model_diagnostics", data_callable=get_model_diagnostics, filename="model_diagnostics.csv",
                        height="500px")
+
+    @render.ui
+    def prev_plot_content():
+        if prev_results.get() is None:
+            return ui.div("Calculate prevalence to view the plot.", class_="text-center mt-5 text-muted fs-4")
+        return safe_plot_ui("prev_plot")
 
     safe_plot_server("prev_plot", data_reactive=prev_results, plot_type=input.prev_plot_type)
 
