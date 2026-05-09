@@ -1,4 +1,4 @@
-# `seroepi.app` 🦠💉🌍
+# 🦠💉🌍 seroepi.app
 *From genomes to a robust vaccine strategy in 5 minutes*
 
 `seroepi.app` is a world-class, fully featured Shiny web dashboard. You can upload data, train models, chat
