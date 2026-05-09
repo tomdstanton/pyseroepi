@@ -178,8 +178,10 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
     """
     Fast formulation design using post-hoc estimation.
 
-    This method is valid ONLY for Frequentist estimates where retraining is not
-    required for Leave-One-Out (LOO) analysis.
+    This method computes stability exactly for Frequentist estimates where retraining
+    is not required for Leave-One-Out (LOO) analysis. For complex modelled estimates 
+    (e.g., Bayesian, Spatial), it can be used as a fast, linear approximation 
+    of stability (ignoring non-linear shrinkage and spatial correlation).
     """
 
     def fit(self, result: 'PrevalenceEstimates', loo_col: str,

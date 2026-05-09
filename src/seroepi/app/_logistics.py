@@ -1,6 +1,6 @@
 import inspect
 from pathlib import Path
-from typing import get_origin, Literal, get_args
+from typing import get_origin, Literal
 from shiny import ui, module, reactive, render
 from shinywidgets import output_widget, render_widget
 from plotly.graph_objs import Figure
@@ -8,7 +8,8 @@ from asyncio import to_thread, sleep
 
 from seroepi.constants import PlotType, Domain, BayesianInferenceMethod
 from seroepi import estimators
-from seroepi.app._utils import safe_plot_ui, safe_plot_server, ui_task, build_grouped_choices, generate_temp_download
+from seroepi.app._utils import safe_plot_ui, safe_plot_server, ui_task, build_grouped_choices, generate_temp_download, \
+    build_estimator_params_ui
 from seroepi.plotting import render_plot
 
 
@@ -169,38 +170,12 @@ def logistics_server(input, output, session, app_state: dict):
                 )
             )
             
-        sig = inspect.signature(EstimatorClass.__init__)
-        elements = []
-        
-        for name, param in sig.parameters.items():
-            if name in ['self']:
-                continue
-                
-            input_id = f"longevity_param_{name}"
-            label = name.replace("_", " ").title()
-            default = param.default if param.default != inspect.Parameter.empty else None
-            
-            # Special override for Logistics: We want absolute counts by default to see actual case burden!
-            if name == "use_relative_incidence":
-                default = False
-                
-            origin = get_origin(param.annotation)
-            
-            if param.annotation is int or param.annotation is float:
-                elements.append(ui.input_numeric(input_id, label, value=default))
-            elif param.annotation is bool:
-                elements.append(ui.input_checkbox(input_id, label, value=default))
-            elif origin is Literal:
-                choices = get_args(param.annotation)
-                choices_dict = {c: str(c).replace('_', ' ').title() for c in choices}
-                elements.append(ui.input_select(input_id, label, choices=choices_dict, selected=default))
-            elif 'InferenceMethod' in str(param.annotation):
-                default_val = default.value if hasattr(default, 'value') else default
-                elements.append(ui.input_select(input_id, label, choices=BayesianInferenceMethod.ui_labels(), selected=default_val))
-                
-        if elements:
-            return ui.div(ui.hr(), ui.p("Hyperparameters", class_="text-muted small mb-1"), *elements)
-        return ui.div()
+        return build_estimator_params_ui(
+            EstimatorClass, 
+            prefix="longevity_param_", 
+            exclude=['self'], 
+            default_overrides={'use_relative_incidence': False}
+        )
 
     @render.ui
     def longevity_model_io_ui():

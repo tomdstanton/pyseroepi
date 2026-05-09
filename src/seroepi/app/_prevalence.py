@@ -7,7 +7,8 @@ from asyncio import to_thread, sleep
 
 from seroepi import estimators
 from seroepi.app._utils import dt_download_server, dt_download_ui, format_metadata_ui, safe_plot_server, safe_plot_ui, \
-    ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices
+    ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices, update_registry, export_settings_ui, \
+    build_estimator_params_ui
 from seroepi.constants import PlotType, EstimatorType, AggregationType, BayesianInferenceMethod
 from seroepi.plotting import render_plot
 
@@ -85,13 +86,7 @@ def prevalence_ui():
                             "The visualization style for the estimated prevalence data."
                         ),
                         ui.hr(),
-                        ui.h6("Export Settings", class_="mb-2"),
-                        ui.tooltip(ui.input_select("plot_format", "Format", choices=["png", "pdf", "svg", "jpeg"]),
-                                   "The image format for the exported plot."),
-                        ui.tooltip(ui.input_numeric("plot_width", "Width (px)", value=1200),
-                                   "Exported image width in pixels."),
-                        ui.tooltip(ui.input_numeric("plot_height", "Height (px)", value=800),
-                                   "Exported image height in pixels."),
+                        export_settings_ui("prev"),
                         ui.download_button("btn_download_plot", "Download Plot", class_="btn-outline-primary w-100"),
                         width=280
                     ),
@@ -137,17 +132,15 @@ def prevalence_server(input, output, session, app_state: dict):
     def update_prev_dropdowns():
         try:
             if (df := shared_df.get()) is not None:
-                trait_choices = {"": "Select..."}
-                trait_choices.update(build_grouped_choices(df.epi.genotypes, "Other Traits"))
+                trait_choices = build_grouped_choices(df.epi.genotypes, "Other Traits", include_empty=True)
 
                 stratify_choices = {}
                 if df.epi.has_spatial:
                     stratify_choices["Spatial Coordinates 📍"] = {"latitude": "Latitude", "longitude": "Longitude"}
                 stratify_choices.update(build_grouped_choices(df.epi.stratify_cols, "Other Variables"))
 
-                cluster_choices = {"": "Select..."}
                 all_cluster_cols = list(dict.fromkeys(df.epi.cluster_cols + df.epi.genotypes))
-                cluster_choices.update(build_grouped_choices(all_cluster_cols, "Clusters 🕸️"))
+                cluster_choices = build_grouped_choices(all_cluster_cols, "Clusters 🕸️", include_empty=True)
 
                 ui.update_selectize("prev_trait", choices=trait_choices, selected="")
                 ui.update_selectize("prev_stratify", choices=stratify_choices)
@@ -185,38 +178,11 @@ def prevalence_server(input, output, session, app_state: dict):
                 )
             )
 
-        # Safely inspect the signature
-        sig = inspect.signature(EstimatorClass.__init__)
-        elements = []
-
-        # Dynamically build standard Shiny inputs depending on the annotated python Type
-        for name, param in sig.parameters.items():
-            # Exclude internal/inappropriate variables from the user UI
-            if name in ['self', 'target_event', 'target_n', 'lat_col', 'lon_col']:
-                continue
-
-            input_id = f"est_param_{name}"
-            label = name.replace("_", " ").title()
-            default = param.default if param.default != inspect.Parameter.empty else None
-
-            origin = get_origin(param.annotation)
-
-            if param.annotation is int or param.annotation is float:
-                elements.append(ui.input_numeric(input_id, label, value=default))
-            elif param.annotation is bool:
-                elements.append(ui.input_checkbox(input_id, label, value=default))
-            elif origin is Literal:
-                choices = get_args(param.annotation)
-                choices_dict = {c: str(c).replace('_', ' ').title() for c in choices}
-                elements.append(ui.input_select(input_id, label, choices=choices_dict, selected=default))
-            elif 'InferenceMethod' in str(param.annotation):
-                default_val = default.value if hasattr(default, 'value') else default
-                elements.append(
-                    ui.input_select(input_id, label, choices=BayesianInferenceMethod.ui_labels(), selected=default_val))
-
-        if elements:
-            return ui.div(ui.hr(), ui.p("Hyperparameters", class_="text-muted small mb-1"), *elements)
-        return ui.div()
+        return build_estimator_params_ui(
+            EstimatorClass, 
+            prefix="est_param_", 
+            exclude=['self', 'target_event', 'target_n', 'lat_col', 'lon_col']
+        )
 
     @render.ui
     def model_io_ui():
@@ -406,15 +372,13 @@ def prevalence_server(input, output, session, app_state: dict):
             prev_results.set(res)
 
             # Cache the run dynamically so it can be picked up by the Formulation tab!
-            registry = app_state.setdefault("results_registry", reactive.Value({})).get().copy()
             trait_clean = _clean_ui_label(res.trait)
             strata_str = ", ".join([_clean_ui_label(s) for s in res.stratified_by]) if res.stratified_by else "Global"
             current_df = shared_df.get()
             ds_name = current_df.attrs.get("dataset_name",
                                            "Unknown Dataset") if current_df is not None else "Unknown Dataset"
             run_name = f"[{ds_name}] {trait_clean} by {strata_str} ({EstimatorType(est_type).name.title()})"
-            registry[run_name] = {"res": res, "est": est, "agg_df": agg_df}
-            app_state["results_registry"].set(registry)
+            update_registry(app_state.setdefault("results_registry", reactive.Value({})), run_name, {"res": res, "est": est, "agg_df": agg_df})
             app_state["active_run_name"].set(run_name)
 
             ui.notification_show("Prevalence calculated successfully! Check the plot tab.", type="message")
@@ -488,7 +452,7 @@ def prevalence_server(input, output, session, app_state: dict):
 
     safe_plot_server("prev_plot", data_reactive=prev_results, plot_type=input.prev_plot_type)
 
-    @render.download(filename=lambda: f"prevalence_plot.{input.plot_format()}")
+    @render.download(filename=lambda: f"prevalence_plot.{input.prev_plot_format()}")
     def btn_download_plot():
         res = prev_results.get()
         if res is None:
@@ -500,6 +464,6 @@ def prevalence_server(input, output, session, app_state: dict):
 
         # Kaleido naturally intercepts write_image locally
         def save_fig(p: Path):
-            fig.write_image(p, format=input.plot_format(), width=input.plot_width(), height=input.plot_height())
+            fig.write_image(p, format=input.prev_plot_format(), width=input.prev_plot_width(), height=input.prev_plot_height())
 
-        return generate_temp_download(save_fig, f".{input.plot_format()}", "Plot Export Error")
+        return generate_temp_download(save_fig, f".{input.prev_plot_format()}", "Plot Export Error")

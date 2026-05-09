@@ -3,7 +3,7 @@ from pathlib import Path
 
 from shiny import ui, module, reactive, render
 
-from seroepi.app._utils import safe_plot_ui, dt_download_ui, dt_download_server, safe_plot_server, ui_task, generate_temp_download
+from seroepi.app._utils import safe_plot_ui, dt_download_ui, dt_download_server, safe_plot_server, ui_task, generate_temp_download, update_registry, export_settings_ui
 from seroepi.constants import PlotType, AggregationType
 from seroepi.formulation import Formulation, CVFormulationDesigner, PostHocFormulationDesigner
 from seroepi.plotting import render_plot
@@ -92,7 +92,7 @@ def formulation_server(input, output, session, app_state: dict):
 
         if res is None or est is None:
             ui.update_selectize("form_holdout", choices=["Awaiting Data..."])
-            ui.update_select("form_designer", choices={"cv": "Cross-Validated (Rigorous)"})
+            ui.update_select("form_designer", choices={"posthoc": "Post-Hoc (Fast)", "cv": "Cross-Validated (Rigorous)"}, selected="cv")
             return
 
         # 1. Populate the Stratum dropdown exactly from the prior calculation metadata
@@ -103,19 +103,11 @@ def formulation_server(input, output, session, app_state: dict):
             ui.update_selectize("form_holdout", choices=["Global (CV Not Possible)"],
                                 selected="Global (CV Not Possible)")
 
-        # 2. Restrict Designer Type based on the exact estimator instance
-        est_name = type(est).__name__.replace('PrevalenceEstimator', '')
-
+        # 2. Select default Designer Type based on the estimator instance
         if est and hasattr(est, 'is_fitted_'):
-            # Modelled estimators (Bayesian, Spatial, Regression) MUST be cross-validated
-            ui.update_select("form_designer", choices={"cv": f"Cross-Validated ({est_name})"}, selected="cv")
+            ui.update_select("form_designer", selected="cv")
         else:
-            # Stateless estimators (Frequentist) unlock the O(N) Post-Hoc math
-            ui.update_select(
-                "form_designer",
-                choices={"posthoc": f"Post-Hoc ({est_name})", "cv": f"Cross-Validated ({est_name})"},
-                selected="posthoc"
-            )
+            ui.update_select("form_designer", selected="posthoc")
 
     @reactive.Effect
     def update_custom_traits_choices():
@@ -175,11 +167,9 @@ def formulation_server(input, output, session, app_state: dict):
                 current_formulation.set(optimal_formulation)
 
                 # Cache the formulation dynamically
-                registry = formulation_registry.get().copy()
                 run_name = app_state["active_run_name"].get() or "Unknown Run"
                 vac_name = f"Optimal {optimal_formulation.max_valency}-valent ({designer_type.upper()}) | {run_name}"
-                registry[vac_name] = optimal_formulation
-                formulation_registry.set(registry)
+                update_registry(formulation_registry, vac_name, optimal_formulation)
                 app_state["active_vac_name"].set(vac_name)
 
                 p.set(message="Rendering dashboards...", value=95)
@@ -212,11 +202,9 @@ def formulation_server(input, output, session, app_state: dict):
         current_formulation.set(custom_formulation)
         
         # Cache the custom formulation
-        registry = formulation_registry.get().copy()
         run_name = app_state["active_run_name"].get() or "Unknown Run"
         vac_name = f"Custom {len(traits)}-valent | {run_name}"
-        registry[vac_name] = custom_formulation
-        formulation_registry.set(registry)
+        update_registry(formulation_registry, vac_name, custom_formulation)
         app_state["active_vac_name"].set(vac_name)
 
         ui.notification_show("Custom formulation evaluated.", type="message")
@@ -232,11 +220,7 @@ def formulation_server(input, output, session, app_state: dict):
                           
         return ui.layout_sidebar(
             ui.sidebar(
-                ui.h6("Export Settings", class_="mb-2"),
-                ui.tooltip(ui.input_select("form_plot_format", "Format", choices=["png", "pdf", "svg", "jpeg"]),
-                           "The image format for the exported plot."),
-                ui.tooltip(ui.input_numeric("form_plot_width", "Width (px)", value=1200), "Exported image width in pixels."),
-                ui.tooltip(ui.input_numeric("form_plot_height", "Height (px)", value=800), "Exported image height in pixels."),
+                export_settings_ui("form"),
                 ui.download_button("btn_download_coverage", "Download Coverage Plot", class_="btn-outline-primary w-100 mb-2"),
                 ui.output_ui("dl_stability_btn_ui"),
                 width=280

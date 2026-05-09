@@ -6,7 +6,7 @@ import pandas as pd
 from asyncio import to_thread, sleep
 from shinywidgets import render_widget, output_widget
 
-from seroepi.app._utils import dt_download_server, dt_download_ui, ColMapper, ui_task, build_grouped_choices
+from seroepi.app._utils import dt_download_server, dt_download_ui, ColMapper, ui_task, build_grouped_choices, update_registry
 from seroepi.client import PathogenwatchClient
 from seroepi.constants import TemporalResolution, SpatialResolution, Domain, GenotypeFlavour, DistanceFlavour, PlotType
 from seroepi.dist import GenomicDistances
@@ -204,9 +204,7 @@ def dataset_server(input, output, session, app_state: dict):
                 shared_df.set(df)
                 shared_dist.set(dist_obj)
                 shared_trans_dist.set(None)
-                reg = dataset_registry.get().copy()
-                reg[ds_name] = {"df": df, "dist": dist_obj, "trans_dist": None}
-                dataset_registry.set(reg)
+                update_registry(dataset_registry, ds_name, {"df": df, "dist": dist_obj, "trans_dist": None})
                 app_state["active_dataset_name"].set(ds_name)
                 
                 ui.notification_show("Data successfully loaded.", type="message", duration=4)
@@ -285,9 +283,7 @@ def dataset_server(input, output, session, app_state: dict):
                 shared_df.set(df)
                 shared_dist.set(None)
                 shared_trans_dist.set(None)
-                reg = dataset_registry.get().copy()
-                reg[name] = {"df": df, "dist": None, "trans_dist": None}
-                dataset_registry.set(reg)
+                update_registry(dataset_registry, name, {"df": df, "dist": None, "trans_dist": None})
                 app_state["active_dataset_name"].set(name)
                 ui.notification_show(f"Loaded {len(df)} genomes from Pathogenwatch.", type="message", duration=4)
 
@@ -315,10 +311,11 @@ def dataset_server(input, output, session, app_state: dict):
                 if clusters.name in df.columns: df = df.drop(columns=[clusters.name])
                 df = df.join(clusters, on='sample_id')
                 shared_df.set(df)
-                reg = dataset_registry.get().copy()
-                if (ds_name := app_state["active_dataset_name"].get()) in reg:
-                    reg[ds_name]["df"] = df
-                    dataset_registry.set(reg)
+                
+                ds_name = app_state["active_dataset_name"].get()
+                if ds_name in dataset_registry.get():
+                    updated_data = {**dataset_registry.get()[ds_name], "df": df}
+                    update_registry(dataset_registry, ds_name, updated_data)
                 p.set(message="Done!", value=100)
                 ui.notification_show(f"Successfully generated {clusters.name}", type="message")
 
@@ -343,11 +340,11 @@ def dataset_server(input, output, session, app_state: dict):
                 df = df.copy()
                 df[t_clusters.name] = t_clusters
                 shared_df.set(df)
-                reg = dataset_registry.get().copy()
-                if (ds_name := app_state["active_dataset_name"].get()) in reg:
-                    reg[ds_name]["df"] = df
-                    reg[ds_name]["trans_dist"] = t_net
-                    dataset_registry.set(reg)
+                
+                ds_name = app_state["active_dataset_name"].get()
+                if ds_name in dataset_registry.get():
+                    updated_data = {**dataset_registry.get()[ds_name], "df": df, "trans_dist": t_net}
+                    update_registry(dataset_registry, ds_name, updated_data)
                 p.set(message="Done!", value=100)
                 ui.notification_show(f"Successfully generated {t_clusters.name}", type="message")
 
@@ -355,15 +352,13 @@ def dataset_server(input, output, session, app_state: dict):
     def update_network_dropdowns():
         if (df := shared_df.get()) is not None:
             color_cols = list(dict.fromkeys(df.epi.stratify_cols + df.epi.cluster_cols + df.epi.genotypes))
-            color_choices = {"": "Select..."}
-            color_choices.update(build_grouped_choices(color_cols, "Other Variables"))
+            color_choices = build_grouped_choices(color_cols, "Other Variables", include_empty=True)
             ui.update_selectize("network_color_col", choices=color_choices, selected="")
 
     @reactive.Effect
     def update_trans_clone_dropdown():
         if (df := shared_df.get()) is not None:
-            trait_choices = {"": "Select..."}
-            trait_choices.update(build_grouped_choices(df.epi.genotypes, "Other Traits"))
+            trait_choices = build_grouped_choices(df.epi.genotypes, "Other Traits", include_empty=True)
             st_col = f"{Domain.GENOTYPE.value}_ST"
             st_select = st_col if st_col in df.epi.genotypes else ""
             ui.update_selectize("trans_clone_col", choices=trait_choices, selected=st_select)

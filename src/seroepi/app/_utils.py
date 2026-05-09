@@ -1,4 +1,5 @@
-from typing import Callable, Union, AsyncGenerator, Any
+from typing import Callable, Union, AsyncGenerator, Any, get_origin, Literal, get_args
+import inspect
 from shiny import ui, module, reactive, render
 import pandas as pd
 from asyncio import to_thread
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from shinywidgets import render_widget, output_widget
 
-from seroepi.constants import PlotType, Domain
+from seroepi.constants import PlotType, Domain, BayesianInferenceMethod
 from seroepi.plotting import render_plot
 
 
@@ -28,7 +29,7 @@ def _clean_ui_label(text: Any) -> str:
             
     return text.replace('_', ' ').title()
 
-def build_grouped_choices(columns: list[str], fallback_group: str = "Other") -> dict:
+def build_grouped_choices(columns: list[str], fallback_group: str = "Other", include_empty: bool = False) -> dict:
     domain_map = {
         Domain.GENOTYPE.value: "Genotypes 🧬",
         Domain.PHENOTYPE.value: "Phenotypes 🔬",
@@ -39,7 +40,7 @@ def build_grouped_choices(columns: list[str], fallback_group: str = "Other") -> 
         Domain.CLUSTER.value: "Clusters 🕸️"
     }
     
-    choices = {}
+    choices = {"": "Select..."} if include_empty else {}
     for col in columns:
         prefix = col.split('_')[0]
         
@@ -128,6 +129,75 @@ async def generate_temp_download(save_func: Callable[[Path], Any], suffix: str, 
     finally:
         path.unlink(missing_ok=True)
 
+def update_registry(reactive_val: reactive.Value, key: str, value: Any) -> None:
+    """Safely copies, updates, and sets a dictionary inside a reactive.Value."""
+    reg = reactive_val.get().copy() if reactive_val.get() is not None else {}
+    reg[key] = value
+    reactive_val.set(reg)
+
+def export_settings_ui(prefix: str = "") -> ui.Tag:
+    """Reusable UI snippet for plot export configuration."""
+    p = f"{prefix}_" if prefix else ""
+    return ui.div(
+        ui.h6("Export Settings", class_="mb-2"),
+        ui.tooltip(ui.input_select(f"{p}plot_format", "Format", choices=["png", "pdf", "svg", "jpeg"]),
+                   "The image format for the exported plot."),
+        ui.tooltip(ui.input_numeric(f"{p}plot_width", "Width (px)", value=1200),
+                   "Exported image width in pixels."),
+        ui.tooltip(ui.input_numeric(f"{p}plot_height", "Height (px)", value=800),
+                   "Exported image height in pixels.")
+    )
+
+HYPERPARAM_TOOLTIPS = {
+    "method": "The inference engine. MCMC is mathematically rigorous but slower; SVI is a fast approximation.",
+    "num_samples": "Number of posterior samples to draw from the parameter distributions.",
+    "num_chains": "Number of independent MCMC chains to run in parallel. Recommended: 4.",
+    "num_warmup": "Number of initial warmup steps used to tune the sampler before drawing valid samples.",
+    "svi_steps": "Number of optimization steps used to converge the SVI ELBO loss.",
+    "seed": "Random seed to ensure the model produces mathematically reproducible results.",
+    "use_relative_incidence": "Adjust raw incidence counts by the total number of genomes sequenced in that period (models relative prevalence).",
+    "forecast_horizon": "Number of future time steps to project the model forward past the observed data."
+}
+
+def build_estimator_params_ui(EstimatorClass: Any, prefix: str = "est_param_", exclude: list[str] = None, default_overrides: dict = None) -> ui.Tag:
+    """Dynamically builds UI inputs for an estimator's hyperparameters with tooltips."""
+    if exclude is None: exclude = ['self']
+    if default_overrides is None: default_overrides = {}
+
+    sig = inspect.signature(EstimatorClass.__init__)
+    elements = []
+
+    for name, param in sig.parameters.items():
+        if name in exclude:
+            continue
+
+        input_id = f"{prefix}{name}"
+        label = name.replace("_", " ").title()
+        default = default_overrides.get(name, param.default if param.default != inspect.Parameter.empty else None)
+        origin = get_origin(param.annotation)
+
+        inp = None
+        if param.annotation is int or param.annotation is float:
+            inp = ui.input_numeric(input_id, label, value=default)
+        elif param.annotation is bool:
+            inp = ui.input_checkbox(input_id, label, value=default)
+        elif origin is Literal:
+            choices = get_args(param.annotation)
+            choices_dict = {c: str(c).replace('_', ' ').title() for c in choices}
+            inp = ui.input_select(input_id, label, choices=choices_dict, selected=default)
+        elif 'InferenceMethod' in str(param.annotation):
+            default_val = default.value if hasattr(default, 'value') else default
+            inp = ui.input_select(input_id, label, choices=BayesianInferenceMethod.ui_labels(), selected=default_val)
+
+        if inp is not None:
+            tooltip_text = HYPERPARAM_TOOLTIPS.get(name)
+            if tooltip_text:
+                inp = ui.tooltip(inp, tooltip_text)
+            elements.append(inp)
+
+    if elements:
+        return ui.div(ui.hr(), ui.p("Hyperparameters", class_="text-muted small mb-1"), *elements)
+    return ui.div()
 
 # UIs ------------------------------------------------------------------------------------------------------------------
 @module.ui
