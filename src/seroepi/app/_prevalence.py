@@ -2,18 +2,13 @@ import inspect
 from pathlib import Path
 from typing import get_origin, Literal, get_args
 from dataclasses import fields
-from pandera.errors import SchemaErrors, SchemaError
-from plotly.graph_objs import Figure
 from shiny import ui, module, reactive, render
-import pandas as pd
 from asyncio import to_thread, sleep
-from shinywidgets import render_widget, output_widget
 
 from seroepi import estimators
 from seroepi.app._utils import dt_download_server, dt_download_ui, format_metadata_ui, safe_plot_server, safe_plot_ui, \
-    ColMapper, ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices
-from seroepi.constants import PlotType, EstimatorType, AggregationType, BayesianInferenceMethod, TemporalResolution, \
-    SpatialResolution, Domain
+    ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices
+from seroepi.constants import PlotType, EstimatorType, AggregationType, BayesianInferenceMethod
 from seroepi.plotting import render_plot
 
 
@@ -49,6 +44,10 @@ def prevalence_ui():
                                "prevalence estimates for sampling bias/outbreaks."),
                     ui.tooltip(ui.input_text("prev_negative", "Negative Indicator", value="-"),
                                "The string or character in your data that indicates a trait is absent (commonly '-' or '0')."),
+                    ui.tooltip(
+                        ui.input_checkbox("prev_pad_zeros", "Pad Zeroes (Zero-fill missing)", value=False),
+                        "Pads missing combinations of strata with zero counts. Essential for Spatial and Hierarchical Bayesian models to map empty regions correctly."
+                    ),
                     ui.input_action_button("btn_aggregate_prev", "Aggregate Data", class_="btn-primary w-100 mt-3")
                 ),
                 ui.accordion_panel(
@@ -66,9 +65,10 @@ def prevalence_ui():
         ),
         ui.navset_card_tab(
             ui.nav_panel("Aggregates 🧮", ui.output_ui("agg_data_content"), value="tab_aggregated_data"),
+            ui.nav_panel("Estimates 📈", ui.output_ui("prev_summary_content"), value="tab_prevalence_data"),
+            ui.nav_panel("Diagnostics 🩺", ui.output_ui("model_diagnostics_content"), value="tab_model_diagnostics"),
             ui.nav_panel(
-                "Estimates 📈",
-                ui.output_ui("prev_summary_content"),
+                "Prevalence Plot 📊",
                 ui.layout_sidebar(
                     ui.sidebar(
                         ui.tooltip(
@@ -97,9 +97,8 @@ def prevalence_ui():
                     ),
                     safe_plot_ui("prev_plot")
                 ),
-                value="tab_prevalence_data"
+                value="tab_prevalence_plot"
             ),
-            ui.nav_panel("Diagnostics 🩺", ui.output_ui("model_diagnostics_content"), value="tab_model_diagnostics"),
             id="main_dashboard_tabs"
         )
     )
@@ -110,18 +109,23 @@ def prevalence_server(input, output, session, app_state: dict):
     shared_df = app_state["shared_df"]
     prev_results = app_state["prev_results"]
     fitted_estimator = app_state["fitted_estimator"]
-    shared_agg_df = app_state["shared_agg_df"]
+    shared_agg_df = app_state.setdefault("shared_agg_df", reactive.Value(None))
 
     # --- STAGE 0: DYNAMIC TAB VISIBILITY ---
     @reactive.Effect
     async def manage_tab_visibility():
-        est = fitted_estimator.get()
-        tabs = [
-            ("tab_prevalence_data", prev_results.get() is not None),
-            ("tab_model_diagnostics", est is not None and hasattr(est, 'diagnostics'))
-        ]
-        for tab, show in tabs:
-            await session.send_custom_message("toggle_tab", {"tab": tab, "show": show})
+        try:
+            est = fitted_estimator.get()
+            tabs = [
+                ("tab_aggregated_data", shared_agg_df.get() is not None),
+                ("tab_prevalence_data", prev_results.get() is not None),
+                ("tab_prevalence_plot", prev_results.get() is not None),
+                ("tab_model_diagnostics", est is not None and hasattr(est, 'diagnostics'))
+            ]
+            for tab, show in tabs:
+                await session.send_custom_message("toggle_tab", {"tab": tab, "show": show})
+        except Exception as e:
+            print(f"Error in manage_tab_visibility: {e}")
 
     @reactive.Effect
     def manage_accordion_state():
@@ -131,23 +135,25 @@ def prevalence_server(input, output, session, app_state: dict):
     # --- STAGE 3: PREVALENCE ANALYSIS WORKFLOW ---
     @reactive.Effect
     def update_prev_dropdowns():
-        if (df := shared_df.get()) is not None:
-            trait_choices = {"": "Select..."}
-            trait_choices.update(build_grouped_choices(df.epi.genotypes, "Other Traits"))
-            
-            stratify_choices = build_grouped_choices(df.epi.stratify_cols, "Other Variables")
-            
-            cluster_choices = {"": "Select..."}
-            all_cluster_cols = list(dict.fromkeys(df.epi.cluster_cols + df.epi.genotypes))
-            cluster_choices.update(build_grouped_choices(all_cluster_cols, "Clusters 🕸️"))
+        try:
+            if (df := shared_df.get()) is not None:
+                trait_choices = {"": "Select..."}
+                trait_choices.update(build_grouped_choices(df.epi.genotypes, "Other Traits"))
 
-            ui.update_selectize("prev_trait", choices=trait_choices, selected="")
-            ui.update_selectize("prev_stratify", choices=stratify_choices)
-            ui.update_selectize("prev_cluster", choices=cluster_choices, selected="")
-            
-            # Default the transmission clone to ST if available
-            st_col = f"{Domain.GENOTYPE.value}_ST"
-            st_select = st_col if st_col in df.epi.genotypes else ""
+                stratify_choices = {}
+                if df.epi.has_spatial:
+                    stratify_choices["Spatial Coordinates 📍"] = {"latitude": "Latitude", "longitude": "Longitude"}
+                stratify_choices.update(build_grouped_choices(df.epi.stratify_cols, "Other Variables"))
+
+                cluster_choices = {"": "Select..."}
+                all_cluster_cols = list(dict.fromkeys(df.epi.cluster_cols + df.epi.genotypes))
+                cluster_choices.update(build_grouped_choices(all_cluster_cols, "Clusters 🕸️"))
+
+                ui.update_selectize("prev_trait", choices=trait_choices, selected="")
+                ui.update_selectize("prev_stratify", choices=stratify_choices)
+                ui.update_selectize("prev_cluster", choices=cluster_choices, selected="")
+        except Exception as e:
+            print(f"Error updating prev dropdowns: {e}")
 
     @render.ui
     def estimator_params_ui():
@@ -276,7 +282,7 @@ def prevalence_server(input, output, session, app_state: dict):
             ui.notification_show("Trait prevalence requires at least one stratification column.", type="error")
             return
 
-        # INTENT ROUTING: 
+        # INTENT ROUTING:
         # If the user wants a compositional breakdown, the trait column acts as the primary grouping variable!
         if agg_mode == AggregationType.COMPOSITIONAL and trait:
             if trait not in stratify:
@@ -286,25 +292,25 @@ def prevalence_server(input, output, session, app_state: dict):
             trait_col = trait
 
         async with ui_task("Aggregation Error") as p:
-                p.set(message="Aggregating data...", value=20)
-                await sleep(0)
+            p.set(message="Aggregating data...", value=20)
+            await sleep(0)
 
-                def run_aggregation():
-                    return df.epi.aggregate_prevalence(
-                        stratify_by=stratify,
-                        trait_col=trait_col,
-                        cluster_col=cluster,
-                        negative_indicator=input.prev_negative()
-                    )
+            def run_aggregation():
+                return df.epi.aggregate_prevalence(
+                    stratify_by=stratify,
+                    trait_col=trait_col,
+                    cluster_col=cluster,
+                    negative_indicator=input.prev_negative(),
+                    pad_zeros=input.prev_pad_zeros()
+                )
 
-                agg_df = await to_thread(run_aggregation)
+            agg_df = await to_thread(run_aggregation)
 
-                shared_agg_df.set(agg_df)
-                p.set(message="Done!", value=100)
-                ui.notification_show("Data aggregated successfully!", type="message")
-                ui.update_accordion("prevalence_accordion", show="Prevalence Estimation 📈")
-                ui.update_navset("main_dashboard_tabs", selected="tab_aggregated_data")
-
+            shared_agg_df.set(agg_df)
+            p.set(message="Done!", value=100)
+            ui.notification_show("Data aggregated successfully!", type="message")
+            ui.update_accordion("prevalence_accordion", show="Prevalence Estimation 📈")
+            ui.update_navset("main_dashboard_tabs", selected="tab_aggregated_data")
 
     @reactive.Effect
     @reactive.event(input.btn_estimate_prev)
@@ -316,104 +322,105 @@ def prevalence_server(input, output, session, app_state: dict):
         est_type = input.prev_estimator()
 
         async with ui_task("Calculation Error") as p:
-                p.set(message="Instantiating estimator...", value=20)
+            p.set(message="Instantiating estimator...", value=20)
+            await sleep(0)
+
+            estimator_class_name = EstimatorType(est_type).class_name
+
+            if not hasattr(estimators, estimator_class_name):
+                ui.notification_show(f"{estimator_class_name} is not available. Did you install seroepi[models]?",
+                                     type="error")
+                return
+
+            EstimatorClass = getattr(estimators, estimator_class_name)
+
+            # Check if we have a model already compiled and fitted in memory
+            in_memory_est = fitted_estimator.get()
+            can_reuse_memory = (
+                    in_memory_est is not None
+                    and type(in_memory_est).__name__ == EstimatorClass.__name__
+                    and getattr(in_memory_est, 'is_fitted_', False)
+            )
+
+            # Intercept the model upload input if it exists
+            file_info = input.model_upload() if "model_upload" in input else None
+
+            if hasattr(EstimatorClass, 'load_model') and file_info:
+                p.set(message="Loading model...", value=40)
                 await sleep(0)
-
-                estimator_class_name = EstimatorType(est_type).class_name
-
-                if not hasattr(estimators, estimator_class_name):
-                    ui.notification_show(f"{estimator_class_name} is not available. Did you install seroepi[models]?",
-                                         type="error")
+                try:
+                    est = EstimatorClass.load_model(Path(file_info[0]["datapath"]))
+                except Exception as e:
+                    ui.notification_show(f"Failed to load model: {str(e)}", type="error", duration=10)
                     return
 
-                EstimatorClass = getattr(estimators, estimator_class_name)
+                p.set(message="Predicting prevalence...", value=60)
+                await sleep(0)
+                res = await to_thread(est.predict, agg_df)
+            elif can_reuse_memory:
+                p.set(message="Using in-memory fitted model...", value=60)
+                await sleep(0)
+                est = in_memory_est
+                res = await to_thread(est.predict, agg_df)
+            else:
+                # Dynamically extract and assign kwargs for the selected estimator class
+                kwargs = {}
+                sig = inspect.signature(EstimatorClass.__init__)
+                for name, param in sig.parameters.items():
+                    if name in ['self', 'target_event', 'target_n', 'lat_col', 'lon_col']:
+                        continue
 
-                # Check if we have a model already compiled and fitted in memory
-                in_memory_est = fitted_estimator.get()
-                can_reuse_memory = (
-                        in_memory_est is not None
-                        and type(in_memory_est).__name__ == EstimatorClass.__name__
-                        and getattr(in_memory_est, 'is_fitted_', False)
-                )
-
-                # Intercept the model upload input if it exists
-                file_info = input.model_upload() if "model_upload" in input else None
-
-                if hasattr(EstimatorClass, 'load_model') and file_info:
-                    p.set(message="Loading model...", value=40)
-                    await sleep(0)
-                    try:
-                        est = EstimatorClass.load_model(Path(file_info[0]["datapath"]))
-                    except Exception as e:
-                        ui.notification_show(f"Failed to load model: {str(e)}", type="error", duration=10)
-                        return
-
-                    p.set(message="Predicting prevalence...", value=60)
-                    await sleep(0)
-                    res = await to_thread(est.predict, agg_df)
-                elif can_reuse_memory:
-                    p.set(message="Using in-memory fitted model...", value=60)
-                    await sleep(0)
-                    est = in_memory_est
-                    res = await to_thread(est.predict, agg_df)
-                else:
-                    # Dynamically extract and assign kwargs for the selected estimator class
-                    kwargs = {}
-                    sig = inspect.signature(EstimatorClass.__init__)
-                    for name, param in sig.parameters.items():
-                        if name in ['self', 'target_event', 'target_n', 'lat_col', 'lon_col']:
+                    input_id = f"est_param_{name}"
+                    if input_id in input:
+                        val = input[input_id]()
+                        if val == "":  # Skip empty numeric inputs to fallback on defaults
                             continue
 
-                        input_id = f"est_param_{name}"
-                        if input_id in input:
-                            val = input[input_id]()
-                            if val == "":  # Skip empty numeric inputs to fallback on defaults
-                                continue
+                        origin = get_origin(param.annotation)
 
-                            origin = get_origin(param.annotation)
+                        if param.annotation is int:
+                            kwargs[name] = int(val)
+                        elif param.annotation is float:
+                            kwargs[name] = float(val)
+                        elif param.annotation is bool:
+                            kwargs[name] = bool(val)
+                        elif origin is Literal:
+                            kwargs[name] = val
+                        elif 'InferenceMethod' in str(param.annotation):
+                            kwargs[name] = BayesianInferenceMethod(val)
+                        else:
+                            kwargs[name] = val
 
-                            if param.annotation is int:
-                                kwargs[name] = int(val)
-                            elif param.annotation is float:
-                                kwargs[name] = float(val)
-                            elif param.annotation is bool:
-                                kwargs[name] = bool(val)
-                            elif origin is Literal:
-                                kwargs[name] = val
-                            elif 'InferenceMethod' in str(param.annotation):
-                                kwargs[name] = BayesianInferenceMethod(val)
-                            else:
-                                kwargs[name] = val
+                # Ensure SpatialPrevalenceEstimator maps correctly to Pandas generated columns
+                if estimator_class_name == "SpatialPrevalenceEstimator":
+                    kwargs['lat_col'] = 'latitude'
+                    kwargs['lon_col'] = 'longitude'
 
-                    # Ensure SpatialPrevalenceEstimator maps correctly to Pandas generated columns
-                    if estimator_class_name == "SpatialPrevalenceEstimator":
-                        kwargs['lat_col'] = 'latitude'
-                        kwargs['lon_col'] = 'longitude'
+                est = EstimatorClass(**kwargs)
 
-                    est = EstimatorClass(**kwargs)
-
-                    p.set(message="Fitting model and calculating...", value=60)
-                    await sleep(0)
-                    res = await to_thread(est.calculate, agg_df)
-
-                fitted_estimator.set(est)
-                prev_results.set(res)
-                
-                # Cache the run dynamically so it can be picked up by the Formulation tab!
-                registry = app_state.setdefault("results_registry", reactive.Value({})).get().copy()
-                trait_clean = _clean_ui_label(res.trait)
-                strata_str = ", ".join([_clean_ui_label(s) for s in res.stratified_by]) if res.stratified_by else "Global"
-                current_df = shared_df.get()
-                ds_name = current_df.attrs.get("dataset_name", "Unknown Dataset") if current_df is not None else "Unknown Dataset"
-                run_name = f"[{ds_name}] {trait_clean} by {strata_str} ({EstimatorType(est_type).name.title()})"
-                registry[run_name] = {"res": res, "est": est, "agg_df": agg_df}
-                app_state["results_registry"].set(registry)
-                app_state["active_run_name"].set(run_name)
-
-                ui.notification_show("Prevalence calculated successfully! Check the plot tab.", type="message")
-                p.set(message="Done", value=100)
-                ui.update_navset("main_dashboard_tabs", selected="tab_prevalence_data")
+                p.set(message="Fitting model and calculating...", value=60)
                 await sleep(0)
+                res = await to_thread(est.calculate, agg_df)
+
+            fitted_estimator.set(est)
+            prev_results.set(res)
+
+            # Cache the run dynamically so it can be picked up by the Formulation tab!
+            registry = app_state.setdefault("results_registry", reactive.Value({})).get().copy()
+            trait_clean = _clean_ui_label(res.trait)
+            strata_str = ", ".join([_clean_ui_label(s) for s in res.stratified_by]) if res.stratified_by else "Global"
+            current_df = shared_df.get()
+            ds_name = current_df.attrs.get("dataset_name",
+                                           "Unknown Dataset") if current_df is not None else "Unknown Dataset"
+            run_name = f"[{ds_name}] {trait_clean} by {strata_str} ({EstimatorType(est_type).name.title()})"
+            registry[run_name] = {"res": res, "est": est, "agg_df": agg_df}
+            app_state["results_registry"].set(registry)
+            app_state["active_run_name"].set(run_name)
+
+            ui.notification_show("Prevalence calculated successfully! Check the plot tab.", type="message")
+            p.set(message="Done", value=100)
+            ui.update_navset("main_dashboard_tabs", selected="tab_prevalence_plot")
+            await sleep(0)
 
     # --- STAGE 4: RENDERING THE DASHBOARDS ---
     @render.ui

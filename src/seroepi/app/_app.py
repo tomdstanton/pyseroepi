@@ -18,7 +18,7 @@ from seroepi.app._utils import ui_task, generate_temp_download
 
 # Constants ------------------------------------------------------------------------------------------------------------
 _package = 'seroepi'
-_app_name = f'{_package}-app'
+_app_name = f'{_package}.app'
 _meta = importlib.metadata.metadata(_package)
 __version__ = _meta.get("Version", "dev")
 
@@ -38,7 +38,7 @@ if _meta.get_all("Project-URL"):
 # UI -------------------------------------------------------------------------------------------------------------------
 @module.ui
 def home_ui():
-    readme = Path(__file__).parent.parent.parent.parent / "README.md"
+    readme = Path(__file__).parent / "README.md"
     return ui.div(
         ui.card(
             ui.markdown(readme.read_text()),
@@ -153,49 +153,7 @@ main_ui = ui.page_navbar(
             **{"data-bs-scroll": "true", "data-bs-backdrop": "false"}  # Allows interacting with dashboard while open!
         )
     ),
-    header=ui.tags.head(
-        # 1. This unlocks the drag-and-drop Selectize plugin
-        ui.tags.script(src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"),
-
-        # 1b. Load Bootstrap Icons for the footer
-        ui.tags.link(rel="stylesheet",
-                     href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"),
-
-        # 2. Custom JS handler to dynamically show/hide navigation tabs
-        ui.tags.script("""
-        $(function() {
-            if (window.Shiny) {
-                Shiny.addCustomMessageHandler("toggle_tab", function(msg) {
-                    var link = document.querySelector('a[data-value="' + msg.tab + '"]');
-                    if (link) {
-                        link.parentElement.style.display = msg.show ? '' : 'none';
-                    }
-                });
-            }
-        });
-    """),
-
-        # 3. Your existing custom CSS
-        ui.tags.style("""
-            /* Premium spacing for inputs */
-            .shiny-input-container { margin-bottom: 15px; }
-
-            /* Clean typography for the navigation bar */
-            .nav-link { font-weight: 500; font-family: 'Inter', sans-serif; letter-spacing: 0.5px; }
-
-            /* Subtle glow effect on value boxes */
-            .bslib-value-box { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); border: 1px solid #334155; }
-
-            /* Remove padding from navset_card_tab bodies so panels fill completely */
-            .bslib-navs-card > .card-body { padding: 0 !important; }
-
-            /* Full-bleed dashboard: Remove gaps around layout_sidebar and page_navbar */
-            .bslib-page-navbar > .tab-content > .tab-pane { padding: 0 !important; }
-            .bslib-sidebar-layout { --bslib-sidebar-main-padding: 0 !important; }
-            .bslib-sidebar-layout > .main { padding: 0 !important; }
-            .bslib-navs-card { border: none !important; border-radius: 0 !important; }
-        """)
-    )
+    header=ui.tags.head(ui.tags.script(src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"))
 )
 
 

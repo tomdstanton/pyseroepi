@@ -152,6 +152,11 @@ class BaseGenotypeParser:
 
         df = df.rename(columns=rename_map)
 
+        if 'latitude' in df.columns:
+            df['latitude'] = df['latitude'].astype("Float64")
+        if 'longitude' in df.columns:
+            df['longitude'] = df['longitude'].astype("Float64")
+
         # Safely prefix the temporal data while keeping the user's name intact
         if date_col and date_col in df.columns:
             new_date_col = f"{Domain.TEMPORAL.value}_{date_col}"
@@ -329,8 +334,11 @@ class BaseGenotypeParser:
         # (This bypasses the pd.NA evaluation crash during Pandera's ge/le checks)
         if 'latitude' not in valid_df.columns:
             valid_df['latitude'] = pd.NA
+        valid_df['latitude'] = valid_df['latitude'].astype("Float64")
+        
         if 'longitude' not in valid_df.columns:
             valid_df['longitude'] = pd.NA
+        valid_df['longitude'] = valid_df['longitude'].astype("Float64")
 
         # AUTOMATIC REVERSE GEOCODING
         # If the dataset has coordinates but lacks spatial regions, infer them!

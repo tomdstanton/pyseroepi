@@ -1,4 +1,4 @@
-# 🦠💉🌍 seroepi
+# 🦠💉🌍 `seroepi`
 
 `seroepi` is a comprehensive Python toolkit and interactive Shiny dashboard for the epidemiological, geospatial, and genotypic analysis of pathogen isolates.
 
@@ -19,7 +19,8 @@ Built seamlessly on top of `pandas`, it is specifically designed to ingest outpu
 
 ## 📦 Installation
 
-You can install `seroepi` directly from PyPI. We highly recommend using uv for lightning-fast installations, but standard `pip` works perfectly too.
+You can install `seroepi` directly from PyPI. We highly recommend using uv for lightning-fast installations,
+but standard `pip` works perfectly too.
 
 ```bash
 # Using uv (Recommended)
@@ -38,19 +39,6 @@ uv pip install seroepi[models,plot]
 
 ---
 
-## 🚀 Running the Interactive Dashboard
-
-`seroepi` comes with a world-class, fully featured Shiny web dashboard. You can upload data, configure models, chat
-with a built-in AI assistant, and download your results without writing a single line of code.
-
-To launch the app locally from your command line:
-
-```bash
-shiny run seroepi.app
-```
-
----
-
 ## 💻 Python API Quickstart
 
 If you prefer working in Jupyter Notebooks or Python scripts, `seroepi` extends standard Pandas DataFrames to make bioinformatics workflows effortless.
@@ -62,13 +50,10 @@ from seroepi.io import PathogenwatchKleborateParser
 import seroepi.accessors  # Magically registers .epi, .geo, .geno, .qc
 
 # Load your Kleborate output and optional Metadata
-geno_df = pd.read_csv("kleborate_results.csv")
-meta_df = pd.read_csv("metadata.csv")
-
 # Parse, merge, and strictly validate against the UnifiedIsolateSchema
 df = PathogenwatchKleborateParser.parse(
-    geno_df, 
-    meta_df=meta_df, 
+    pd.read_csv("kleborate_results.csv"),
+    meta_df=pd.read_csv("metadata.csv"),
     meta_kwargs={"id_col": "sample_id", "country_col": "country"}
 )
 
@@ -123,4 +108,5 @@ print(optimal_vaccine.get_formulation())
 
 ## 📚 Documentation
 
-For a complete deep-dive into the available methods, classes, and architectural concepts, please refer to the fully documented **API Reference** (Automatically generated).
+For a complete deep-dive into the available methods, classes, and architectural concepts, please refer to the fully
+documented **API Reference** (Automatically generated).

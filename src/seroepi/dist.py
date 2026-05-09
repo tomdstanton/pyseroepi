@@ -34,7 +34,7 @@ class DistancesBase(ABC):
         self.index.name = 'sample_id'
 
     @abstractmethod
-    def get_clusters(self, *args, **kwargs) -> pd.Series[pd.CategoricalDtype]: ...
+    def get_clusters(self, *args, **kwargs) -> pd.Series: ...
 
     def layout(self, random_state: int = 42, n_init: int = 1, max_iter: int = 100) -> np.ndarray:
         """
@@ -102,7 +102,7 @@ class GenomicDistances(DistancesBase):
 
     @classmethod
     def from_pairwise(cls, query_col: pd.Series, target_col: pd.Series, weight_col: pd.Series,
-                      metric_type: DistanceMetricType = DistanceMetricType.ABSOLUTE_DISTANCE) -> GenomicDistances:
+                      metric_type: DistanceMetricType = DistanceMetricType.ABSOLUTE_DISTANCE) -> 'GenomicDistances':
         """
         Creates a Distances instance from long-format pairwise data.
 
@@ -134,7 +134,7 @@ class GenomicDistances(DistancesBase):
         return cls(M.maximum(M.T).tocsr(), pd.Series(uids), metric_type)
 
     @classmethod
-    def from_ska2(cls, filepath_or_buffer) -> GenomicDistances:
+    def from_ska2(cls, filepath_or_buffer) -> 'GenomicDistances':
         """
         Parses a pairwise distance matrix from SKA2 output.
 
@@ -148,7 +148,7 @@ class GenomicDistances(DistancesBase):
         return cls.from_pairwise(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])
 
     @classmethod
-    def from_pathogenwatch(cls, filepath_or_buffer) -> GenomicDistances:
+    def from_pathogenwatch(cls, filepath_or_buffer) -> 'GenomicDistances':
         """
         Parses a square distance matrix from Pathogenwatch.
 
@@ -164,7 +164,7 @@ class GenomicDistances(DistancesBase):
         return cls(M.tocsr(), pd.Series(df.columns), DistanceMetricType.ABSOLUTE_DISTANCE)
 
     @classmethod
-    def from_newick(cls, newick_string: str) -> GenomicDistances:
+    def from_newick(cls, newick_string: str) -> 'GenomicDistances':
         """
         Parses a Newick string and calculates patristic distances.
 
@@ -230,7 +230,7 @@ class GenomicDistances(DistancesBase):
         _, labels = sp_connected_components(csgraph=adj, directed=False, return_labels=True)
         return pd.Series(labels, index=self.index, dtype='category', name=f"connected_components_{threshold=}").cat.as_ordered()
 
-    def to_type(self, target_type: DistanceMetricType) -> GenomicDistances:
+    def to_type(self, target_type: DistanceMetricType) -> 'GenomicDistances':
         """
         Converts the distances to a different metric type.
 
@@ -294,7 +294,7 @@ class TransmissionDistances(DistancesBase):
             clones: np.ndarray,
             spatial_threshold_km: float = 10.0,
             temporal_threshold_days: int = 20,
-    ) -> TransmissionDistances:
+    ) -> 'TransmissionDistances':
         """Builds a sparse transmission adjacency graph from spatiotemporal arrays."""
         n = len(sample_ids)
         global_rows = []

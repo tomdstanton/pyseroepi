@@ -107,6 +107,9 @@ class GeoAccessor:
         if isinstance(df[res_col].dtype, pd.CategoricalDtype):
              df[res_col] = df[res_col].cat.remove_unused_categories()
 
+        df['latitude'] = df['latitude'].astype("Float64")
+        df['longitude'] = df['longitude'].astype("Float64")
+
         return df
 
     def reverse_geocode(self, geojson_path: Union[str, Path] = None, target_spatial_name: str = 'Country') -> pd.DataFrame:
@@ -166,6 +169,10 @@ class GeoAccessor:
         
         new_col = f"{Domain.SPATIAL.value}_{target_spatial_name}"
         res_col = f"{Domain.SPATIAL_RES.value}_{target_spatial_name}"
+        
+        df['latitude'] = df['latitude'].astype("Float64")
+        df['longitude'] = df['longitude'].astype("Float64")
+        
         return df
 
 
@@ -219,7 +226,7 @@ class EpiAccessor:
         """
         if not self.has_spatial:
             raise ValueError("Spatial columns ('latitude', 'longitude') are missing.")
-        return self._obj[['latitude', 'longitude']]
+        return self._obj[['latitude', 'longitude']].astype("Float64")
 
     # --- Time Series / Epidemic Curve Methods ---
 

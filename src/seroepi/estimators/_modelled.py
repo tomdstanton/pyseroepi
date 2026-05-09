@@ -285,6 +285,8 @@ class BayesianPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pr
         Returns:
             The fitted estimator instance.
         """
+        self._check_zero_padding(agg_df)
+
         self.strata_, self.meta_ = self._extract_strata(agg_df, exclude_cols=[self.target_event, self.target_n, 'trait'])
 
         df_fit = agg_df.copy()
@@ -515,6 +517,8 @@ class SpatialPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pre
 
     def fit(self, agg_df: pd.DataFrame) -> 'SpatialPrevalenceEstimator':
         """Aggregates to unique locations, normalizes, and fits the GP."""
+        self._check_zero_padding(agg_df)
+
         if self.lat_col not in agg_df.columns or self.lon_col not in agg_df.columns:
             raise KeyError(
                 f"Spatial estimator requires '{self.lat_col}' and '{self.lon_col}' "
@@ -528,7 +532,7 @@ class SpatialPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pre
         })
 
         # 2. Extract and Standardize Coordinates
-        raw_coords = spatial_df[[self.lat_col, self.lon_col]].values
+        raw_coords = spatial_df[[self.lat_col, self.lon_col]].astype(float).values
         self.loc_mean_ = np.mean(raw_coords, axis=0)
         self.loc_scale_ = np.std(raw_coords, axis=0) + 1e-8  # Prevent div by zero
 
@@ -561,7 +565,7 @@ class SpatialPrevalenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Pre
         self.check_is_fitted()
 
         # 1. Standardize new coordinates using the FITTED scaler
-        raw_X_test = df[[self.lat_col, self.lon_col]].values
+        raw_X_test = df[[self.lat_col, self.lon_col]].astype(float).values
         X_test = jnp.array((raw_X_test - self.loc_mean_) / self.loc_scale_)
         X_train = jnp.array(self.X_train_)
 
