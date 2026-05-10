@@ -1,15 +1,16 @@
 import inspect
 from pathlib import Path
 from typing import get_origin, Literal
+from dataclasses import fields
 from shiny import ui, module, reactive, render
 from shinywidgets import output_widget, render_widget
 from plotly.graph_objs import Figure
 from asyncio import to_thread, sleep
 
-from seroepi.constants import PlotType, Domain, BayesianInferenceMethod
+from seroepi.constants import PlotType, Domain, BayesianInferenceMethod, TemporalResolution
 from seroepi import estimators
-from seroepi.app._utils import safe_plot_ui, safe_plot_server, ui_task, build_grouped_choices, generate_temp_download, \
-    build_estimator_params_ui
+from seroepi.app._utils import dt_download_server, dt_download_ui, format_metadata_ui, safe_plot_ui, safe_plot_server, ui_task, build_grouped_choices, generate_temp_download, \
+    build_estimator_params_ui, export_settings_ui
 from seroepi.plotting import render_plot
 
 
@@ -20,30 +21,60 @@ def logistics_ui():
         ui.sidebar(
             ui.accordion(
                 ui.accordion_panel(
-                    "Coverage Settings 📊",
-                    ui.tooltip(ui.input_selectize("logistics_stratify", "Stratify General Coverage By:", choices=[""]),
-                               "Select a variable to group the population coverage by.")
+                    "Incidence Aggregation 🧮",
+                    ui.p("Aggregate historical incidence data for your vaccine formulation.", class_="small text-muted mb-2"),
+                    ui.tooltip(ui.input_selectize("logistics_stratify", "Stratify By (Optional)", choices=[], multiple=True),
+                               "Variables to group the data by before calculating incidence. A temporal column will be automatically included."),
+                    ui.tooltip(ui.input_select("logistics_freq", "Time Frequency", choices=TemporalResolution.ui_labels(), selected=TemporalResolution.MONTH.value),
+                               "The time interval to bin the incidence data."),
+                    ui.tooltip(ui.input_checkbox("logistics_pad_zeros", "Pad Zeroes", value=True),
+                               "Essential for BSTS models to maintain an unbroken time series. Fills missing time bins with 0 counts."),
+                    ui.input_action_button("btn_aggregate_incidence", "Aggregate Data", class_="btn-primary w-100 mt-3")
                 ),
                 ui.accordion_panel(
-                    "Longevity Forecasting 🔮",
-                    ui.p("Forecast the evolutionary trajectory of the targeted traits to predict vaccine lifespan.", class_="small text-muted mb-3"),
+                    "Incidence Estimation 🔮",
                     ui.input_select("longevity_estimator", "Estimator Model", choices={"bayesian": "Bayesian (BSTS)", "glm": "Frequentist (GLM)"}),
                     ui.output_ui("longevity_estimator_params_ui"),
                     ui.output_ui("longevity_model_io_ui"),
-                    ui.input_action_button("btn_run_longevity", "Forecast Longevity", class_="btn-success w-100 mt-2")
+                    ui.input_action_button("btn_run_longevity", "Forecast Longevity 🚀", class_="btn-primary w-100 mt-2")
                 ),
                 id="logistics_accordion",
-                open=["Coverage Settings 📊"],
+                open=["Incidence Aggregation 🧮"],
                 multiple=True
             ),
             width=350
         ),
         # Main Dashboard Array
         ui.navset_card_tab(
-            ui.nav_panel("General Coverage 📊", ui.output_ui("logistics_general_content"), value="tab_logistics_general"),
-            ui.nav_panel("Spatial Coverage 🌍", ui.output_ui("logistics_spatial_content"), value="tab_logistics_spatial"),
-            ui.nav_panel("Historical Coverage 📈", ui.output_ui("logistics_temporal_content"), value="tab_logistics_temporal"),
-            ui.nav_panel("Longevity Forecast 🔮", ui.output_ui("logistics_longevity_content"), value="tab_logistics_longevity"),
+            ui.nav_panel("Aggregates 🧮", ui.output_ui("logistics_agg_content"), value="tab_logistics_agg"),
+            ui.nav_panel("Estimates 📈", ui.output_ui("logistics_est_content"), value="tab_logistics_est"),
+            ui.nav_panel("Diagnostics 🩺", ui.output_ui("logistics_diag_content"), value="tab_logistics_diag"),
+            ui.nav_panel(
+                "Logistics Plots 📊",
+                ui.layout_sidebar(
+                    ui.sidebar(
+                        ui.tooltip(
+                            ui.input_select(
+                                "logistics_plot_type",
+                                "Plot Type",
+                                choices={
+                                    PlotType.LONGEVITY.value: "Longevity Forecast",
+                                    PlotType.EPICURVE.value: "Historical Coverage",
+                                    PlotType.FOREST.value: "General Coverage",
+                                    PlotType.CHOROPLETH.value: "Spatial Coverage"
+                                }
+                            ),
+                            "Visualization style for logistics and coverage."
+                        ),
+                        ui.hr(),
+                        export_settings_ui("logistics"),
+                        ui.download_button("btn_download_logistics_plot", "Download Plot", class_="btn-outline-primary w-100"),
+                        width=280
+                    ),
+                    ui.output_ui("logistics_plot_content")
+                ),
+                value="tab_logistics_plots"
+            ),
             id="logistics_tabs"
         )
     )
@@ -53,7 +84,8 @@ def logistics_ui():
 def logistics_server(input, output, session, app_state: dict):
     """Server logic for clinical trial site selection and spatial density analysis."""
     shared_df = app_state["shared_df"]
-    shared_forecast = reactive.Value(None)
+    shared_agg_inc_df = app_state.setdefault("shared_agg_inc_df", reactive.Value(None))
+    shared_forecast = app_state.setdefault("shared_forecast", reactive.Value(None))
     current_formulation = app_state["current_formulation"]
     fitted_longevity_estimator = app_state.setdefault("fitted_longevity_estimator", reactive.Value(None))
     ESTIMATOR_MAP = {
@@ -65,8 +97,7 @@ def logistics_server(input, output, session, app_state: dict):
     def update_stratify_dropdown():
         df = shared_df.get()
         if df is not None:
-            strat_choices = {"": "Global (No Stratification)"}
-            strat_choices.update(build_grouped_choices(df.epi.stratify_cols, "Other Variables"))
+            strat_choices = build_grouped_choices(df.epi.stratify_cols, "Other Variables")
             ui.update_selectize("logistics_stratify", choices=strat_choices)
 
     @reactive.Effect
@@ -74,13 +105,14 @@ def logistics_server(input, output, session, app_state: dict):
         df = shared_df.get()
         vac = current_formulation.get()
         has_vac = bool(vac is not None)
-        has_spatial = bool(df is not None and df.epi.has_spatial)
-        has_temporal = bool(df is not None and df.epi.has_temporal)
-        has_forecast = bool(shared_forecast.get() is not None)
+        has_agg = bool(shared_agg_inc_df.get() is not None)
+        has_est = bool(shared_forecast.get() is not None)
+        est_model = fitted_longevity_estimator.get()
 
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_spatial", "show": has_vac and has_spatial})
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_temporal", "show": has_vac and has_temporal})
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_longevity", "show": has_vac and has_temporal and has_forecast})
+        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_agg", "show": has_agg})
+        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_est", "show": has_est})
+        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_diag", "show": has_est and hasattr(est_model, 'diagnostics')})
+        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_plots", "show": has_vac})
 
     @reactive.Calc
     def covered_df():
@@ -91,53 +123,60 @@ def logistics_server(input, output, session, app_state: dict):
         df = df.copy()
         targets = vac.get_formulation()
         
+        if vac.trait not in df.columns:
+            ui.notification_show(f"Active dataset is missing the formulated trait: {vac.trait}", type="error")
+            return None
+            
         # Assign binary coverage trait
         df['Vaccine_Coverage'] = False
         valid_mask = df[vac.trait].notna()
         df.loc[valid_mask, 'Vaccine_Coverage'] = df.loc[valid_mask, vac.trait].isin(targets)
         return df
 
-    @render.ui
-    def logistics_general_content():
-        if current_formulation.get() is None:
-            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
-        return safe_plot_ui("logistics_general_plot")
-
-    @render.ui
-    def logistics_spatial_content():
-        if current_formulation.get() is None:
-            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
-        df = shared_df.get()
-        if df is None or not df.epi.has_spatial:
-            return ui.div("Spatial metadata is required to view spatial coverage.", class_="text-center mt-5 text-muted fs-4")
-        return output_widget("logistics_spatial_plot")
-
-    @render.ui
-    def logistics_temporal_content():
-        if current_formulation.get() is None:
-            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
-        df = shared_df.get()
-        if df is None or not df.epi.has_temporal:
-            return ui.div("Temporal metadata is required to view historical coverage.", class_="text-center mt-5 text-muted fs-4")
-        return safe_plot_ui("logistics_temporal_plot")
-
-    @render.ui
-    def logistics_longevity_content():
-        if current_formulation.get() is None:
-            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
-        if shared_forecast.get() is None:
-            return ui.div("Run longevity forecasting in the sidebar to view this plot.", class_="text-center mt-5 text-muted fs-4")
-        return output_widget("logistics_longevity_plot")
+    @reactive.Effect
+    @reactive.event(input.btn_aggregate_incidence)
+    async def aggregate_incidence():
+        df = covered_df()
+        if df is None:
+            ui.notification_show("Please ensure data is loaded and a formulation is active.", type="warning")
+            return
+            
+        stratify = list(input.logistics_stratify())
+        freq = input.logistics_freq()
+        pad_zeros = input.logistics_pad_zeros()
+        
+        async with ui_task("Aggregation Error") as p:
+            p.set(message="Aggregating incidence...", value=20)
+            await sleep(0)
+            
+            def run_agg():
+                df_inc = df.epi.aggregate_incidence(
+                    stratify_by=stratify,
+                    trait_col='Vaccine_Coverage',
+                    freq=freq,
+                    pad_zeros=pad_zeros
+                )
+                # Standardize date col
+                temporal_cols = [c for c in df_inc.columns if str(c).startswith(f"{Domain.TEMPORAL.value}_")]
+                if temporal_cols:
+                    df_inc = df_inc.rename(columns={temporal_cols[0]: 'date'})
+                return df_inc
+                
+            agg_df = await to_thread(run_agg)
+            shared_agg_inc_df.set(agg_df)
+            p.set(message="Done!", value=100)
+            ui.notification_show("Incidence aggregated successfully!", type="message")
+            ui.update_accordion("logistics_accordion", show="Incidence Estimation 🔮")
+            ui.update_navset("logistics_tabs", selected="tab_logistics_agg")
 
     @reactive.Calc
     def general_coverage_res():
         df = covered_df()
-        strat_col = input.logistics_stratify()
+        strat_list = list(input.logistics_stratify())
         if df is None: return None
         
-        strat_list = [strat_col] if strat_col else []
         agg_df = df.epi.aggregate_prevalence(stratify_by=strat_list, trait_col='Vaccine_Coverage')
-        est = estimators.UnpooledPrevalenceEstimator()
+        est = estimators.GLMPrevalenceEstimator()
         return est.calculate(agg_df)
 
     @reactive.Calc
@@ -150,24 +189,8 @@ def logistics_server(input, output, session, app_state: dict):
         spatial_col = spatial_cols[0]
         
         agg_df = df.epi.aggregate_prevalence(stratify_by=[spatial_col], trait_col='Vaccine_Coverage')
-        est = estimators.UnpooledPrevalenceEstimator()
+        est = estimators.GLMPrevalenceEstimator()
         return {"res": est.calculate(agg_df), "geo_col": spatial_col}
-
-    @reactive.Calc
-    def temporal_coverage_res():
-        df = covered_df()
-        if df is None or not df.epi.has_temporal:
-            return None
-        
-        inc_df = df.epi.aggregate_incidence(stratify_by=[], trait_col='Vaccine_Coverage')
-
-        # Standardize the dynamic temporal column to 'date' for the estimator backend
-        temporal_cols = [c for c in inc_df.columns if str(c).startswith(f"{Domain.TEMPORAL.value}_")]
-        if temporal_cols:
-            inc_df = inc_df.rename(columns={temporal_cols[0]: 'date'})
-
-        est = estimators.GLMIncidenceEstimator(use_relative_incidence=False)
-        return est.calculate(inc_df)
 
     @render.ui
     def longevity_estimator_params_ui():
@@ -240,24 +263,12 @@ def logistics_server(input, output, session, app_state: dict):
     @reactive.Effect
     @reactive.event(input.btn_run_longevity)
     async def run_longevity():
-        df = shared_df.get()
-        vac = current_formulation.get()
-        if df is None or vac is None:
-            ui.notification_show("Please select a vaccine formulation.", type="warning")
+        inc_df = shared_agg_inc_df.get()
+        if inc_df is None:
+            ui.notification_show("Please aggregate incidence data first.", type="warning")
             return
 
         async with ui_task("Longevity Forecasting Error") as p:
-            p.set(message="Aggregating incidence data...", value=20)
-            await sleep(0)
-            def agg_incidence():
-                df_inc = df.epi.aggregate_incidence(stratify_by=[vac.trait], trait_col=None, pad_zeros=True)
-                # Standardize the dynamic temporal column to 'date' for the estimator backend
-                temporal_cols = [c for c in df_inc.columns if str(c).startswith(f"{Domain.TEMPORAL.value}_")]
-                if temporal_cols:
-                    df_inc = df_inc.rename(columns={temporal_cols[0]: 'date'})
-                return df_inc
-            inc_df = await to_thread(agg_incidence)
-
             p.set(message="Instantiating estimator...", value=40)
             await sleep(0)
             
@@ -322,26 +333,140 @@ def logistics_server(input, output, session, app_state: dict):
             
             p.set(message="Done!", value=100)
             ui.notification_show("Longevity forecast complete!", type="message")
-            ui.update_navset("logistics_tabs", selected="tab_logistics_longevity")
+            ui.update_navset("logistics_tabs", selected="tab_logistics_plots")
             await sleep(0)
 
-    # --- Plot Rendering ---
-    safe_plot_server("logistics_general_plot", data_reactive=general_coverage_res, plot_type=PlotType.FOREST)
-    safe_plot_server("logistics_temporal_plot", data_reactive=temporal_coverage_res, plot_type=PlotType.EPICURVE)
+    # --- Tab Renderers ---
+    @render.ui
+    def logistics_agg_content():
+        if (agg_df := shared_agg_inc_df.get()) is None:
+            return ui.div("Please aggregate incidence data in the sidebar.", class_="text-center mt-5 text-muted fs-4")
+            
+        meta_dict = agg_df.attrs.get('metric_meta', {})
+        meta_ui = format_metadata_ui(meta_dict)
+
+        return ui.div(
+            ui.card(ui.card_header("Incidence Aggregates Metadata"), ui.div(*meta_ui, class_="p-2")),
+            dt_download_ui("logistics_agg_data", "Aggregated Incidence")
+        )
+
+    dt_download_server("logistics_agg_data", data_callable=lambda: shared_agg_inc_df.get(), filename="aggregated_incidence.csv")
+
+    @render.ui
+    def logistics_est_content():
+        if (res := shared_forecast.get()) is None:
+            return ui.div("Calculate incidence estimates to view the results data.", class_="text-center mt-5 text-muted fs-4")
+
+        meta_dict = {f.name: getattr(res, f.name) for f in fields(res) if f.name not in ['data', 'model_results']}
+        meta_ui = format_metadata_ui(meta_dict)
+
+        return ui.div(
+            ui.card(ui.card_header("Incidence Estimates Metadata"), ui.div(*meta_ui, class_="p-2")),
+            dt_download_ui("logistics_est_data", "Incidence Estimates"),
+            ui.card(
+                ui.card_header("Model Summary (IRR)"),
+                dt_download_ui("logistics_est_model_results", "Model Summary"),
+                class_="mt-3"
+            ) if res.model_results is not None and not res.model_results.empty else ui.div()
+        )
+
+    dt_download_server("logistics_est_data", data_callable=lambda: shared_forecast.get().data if shared_forecast.get() else None, filename="incidence_estimates.csv", height="400px")
+    dt_download_server("logistics_est_model_results", data_callable=lambda: shared_forecast.get().model_results if shared_forecast.get() else None, filename="incidence_model_summary.csv", height="200px")
+
+    @render.ui
+    def logistics_diag_content():
+        if (est := fitted_longevity_estimator.get()) is None:
+            return ui.div("Estimate incidence to view model diagnostics.", class_="text-center mt-5 text-muted fs-4")
+
+        if not hasattr(est, 'diagnostics'):
+            return ui.div(
+                ui.p(f"Diagnostics are not applicable for {type(est).__name__}."),
+                class_="text-center mt-5 text-muted fs-4"
+            )
+
+        try:
+            _ = est.diagnostics()
+            return dt_download_ui("logistics_model_diagnostics", "NumPyro Posterior Diagnostics")
+        except Exception as e:
+            return ui.div(f"Diagnostics Error: {str(e)}", class_="text-danger text-center mt-5 fs-5")
+
+    def get_longevity_diagnostics():
+        if (est := fitted_longevity_estimator.get()) is not None and hasattr(est, 'diagnostics'):
+            try:
+                return est.diagnostics()
+            except Exception:
+                pass
+        return None
+
+    dt_download_server("logistics_model_diagnostics", data_callable=get_longevity_diagnostics, filename="longevity_diagnostics.csv", height="500px")
+
+    @render.ui
+    def logistics_plot_content():
+        vac = current_formulation.get()
+        if vac is None:
+            return ui.div("Please design a vaccine formulation in Tab 2 first.", class_="text-center mt-5 text-muted fs-4")
+        return output_widget("logistics_plot")
 
     @render_widget
-    def logistics_spatial_plot():
-        res_dict = spatial_coverage_res()
-        empty_theme = dict(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94A3B8'))
-        if res_dict is None: 
-            return Figure().update_layout(title="No spatial data available.", **empty_theme)
-        return render_plot(res_dict['res'], PlotType.CHOROPLETH, geo_col=res_dict['geo_col'])
-        
-    @render_widget
-    def logistics_longevity_plot():
+    def logistics_plot():
         vac = current_formulation.get()
         forecast = shared_forecast.get()
+        p_type = input.logistics_plot_type()
         empty_theme = dict(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94A3B8'))
-        if vac is None or forecast is None: 
-            return Figure().update_layout(title="Run forecasting first.", **empty_theme)
-        return render_plot(vac, PlotType.LONGEVITY, forecast=forecast)
+        
+        try:
+            if p_type == PlotType.LONGEVITY.value:
+                if forecast is None:
+                    return Figure().update_layout(title="Run forecasting first.", **empty_theme)
+                return render_plot(vac, PlotType.LONGEVITY, forecast=forecast)
+            
+            elif p_type == PlotType.EPICURVE.value:
+                if forecast is None:
+                    return Figure().update_layout(title="Run forecasting first.", **empty_theme)
+                return render_plot(forecast, PlotType.EPICURVE)
+                
+            elif p_type == PlotType.FOREST.value:
+                res = general_coverage_res()
+                if res is None:
+                    return Figure().update_layout(title="No general coverage data.", **empty_theme)
+                return render_plot(res, PlotType.FOREST)
+                
+            elif p_type == PlotType.CHOROPLETH.value:
+                res_dict = spatial_coverage_res()
+                if res_dict is None:
+                    return Figure().update_layout(title="No spatial data available.", **empty_theme)
+                return render_plot(res_dict['res'], PlotType.CHOROPLETH, geo_col=res_dict['geo_col'])
+        except Exception as e:
+            ui.notification_show(f"Plotting Error: {str(e)}", type="error", duration=10)
+            return Figure().update_layout(title=f"Error: {str(e)}", **empty_theme)
+
+    @render.download(filename=lambda: f"logistics_plot.{input.logistics_plot_format()}")
+    def btn_download_logistics_plot():
+        vac = current_formulation.get()
+        forecast = shared_forecast.get()
+        p_type = input.logistics_plot_type()
+        
+        try:
+            if p_type == PlotType.LONGEVITY.value:
+                if forecast is None: return
+                fig = render_plot(vac, PlotType.LONGEVITY, forecast=forecast)
+            elif p_type == PlotType.EPICURVE.value:
+                if forecast is None: return
+                fig = render_plot(forecast, PlotType.EPICURVE)
+            elif p_type == PlotType.FOREST.value:
+                res = general_coverage_res()
+                if res is None: return
+                fig = render_plot(res, PlotType.FOREST)
+            elif p_type == PlotType.CHOROPLETH.value:
+                res_dict = spatial_coverage_res()
+                if res_dict is None: return
+                fig = render_plot(res_dict['res'], PlotType.CHOROPLETH, geo_col=res_dict['geo_col'])
+            else:
+                return
+                
+            def save_fig(p: Path):
+                fig.write_image(p, format=input.logistics_plot_format(), width=input.logistics_plot_width(), height=input.logistics_plot_height())
+            return generate_temp_download(save_fig, f".{input.logistics_plot_format()}", "Plot Export Error")
+            
+        except Exception as e:
+            ui.notification_show(f"Export Error: {str(e)}", type="error")

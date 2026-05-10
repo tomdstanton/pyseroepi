@@ -46,7 +46,7 @@ def dataset_ui():
                             ui.tooltip("Pathogenwatch 🔭", "Select a Pathogenwatch collection from your account to import directly."),
                             ui.div(
                                 ui.tooltip(ui.input_password("pw_api_key", "API Key"), "Your Pathogenwatch API key for authenticating secure downloads."),
-                                ui.input_action_button("btn_fetch_pw", "Fetch Collections", class_="btn-secondary w-100 mb-3"),
+                                ui.input_action_button("btn_fetch_pw", "Fetch Collections", class_="btn-outline-primary w-100 mb-3"),
                                 ui.input_selectize("pw_collection", "Select Collection", choices=[]),
                                 ui.hr(),
                                 ui.input_action_button("btn_load_pw", "Load Collection", class_="btn-primary w-100"),

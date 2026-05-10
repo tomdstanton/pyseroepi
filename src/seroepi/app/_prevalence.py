@@ -57,7 +57,7 @@ def prevalence_ui():
                                "The statistical model used to calculate prevalence and confidence intervals."),
                     ui.output_ui("estimator_params_ui"),
                     ui.output_ui("model_io_ui"),
-                    ui.input_action_button("btn_estimate_prev", "Estimate Prevalence 🚀", class_="btn-success w-100")
+                    ui.input_action_button("btn_estimate_prev", "Estimate Prevalence 🚀", class_="btn-primary w-100")
                 ),
                 id="prevalence_accordion",
                 open=["Prevalence Aggregation 🧮"], multiple=True

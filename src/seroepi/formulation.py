@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from abc import ABC
-from typing import Optional, Callable
-from joblib import Parallel, delayed
+from pathlib import Path
+from typing import Optional, Callable, Union, Type
+from joblib import Parallel, delayed, dump as joblib_dump, load as joblib_load
 from seroepi.estimators import BaseEstimator, ModelledMixin
 
 
@@ -88,6 +89,23 @@ class Formulation:
             stability_metrics=empty_df,
             permutation_history=empty_df
         )
+
+    def save(self, filepath: Union[str, Path]) -> None:
+        """Serializes the Formulation instance to disk."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib_dump(self, path)
+
+    @classmethod
+    def load(cls: Type['Formulation'], filepath: Union[str, Path]) -> 'Formulation':
+        """Loads a serialized Formulation from disk."""
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"No formulation found at {path}")
+        formulation = joblib_load(path)
+        if not isinstance(formulation, cls):
+            raise TypeError(f"Type mismatch: Expected {cls.__name__}, got {type(formulation).__name__}.")
+        return formulation
 
     def get_formulation(self) -> list[str]:
         """

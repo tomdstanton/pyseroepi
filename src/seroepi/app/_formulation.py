@@ -25,7 +25,7 @@ def formulation_ui():
                     ui.tooltip(ui.input_select("form_designer", "Designer Type",
                                                choices={"posthoc": "Post-Hoc (Fast)", "cv": "Cross-Validated (Rigorous)"}),
                                "Post-Hoc is faster but assumes independence. Cross-Validated re-fits the model iteratively for rigorous stability testing."),
-                    ui.input_action_button("btn_run_designer", "Generate Formulation 🚀", class_="btn-success w-100 mt-3")
+                    ui.input_action_button("btn_run_designer", "Generate Formulation 🚀", class_="btn-primary w-100 mt-3")
                 ),
                 ui.accordion_panel(
                     "Manual Override 🛠️",
@@ -41,10 +41,16 @@ def formulation_ui():
                         "Drag to reorder, or manually type and add variants to evaluate a custom formulation formulation."
                     ),
                     ui.div(
-                        ui.input_action_button("btn_eval_custom", "Evaluate Custom", class_="btn-warning w-50"),
-                        ui.input_action_button("btn_copy_optimal", "Copy Optimal", class_="btn-outline-info w-50"),
+                        ui.input_action_button("btn_eval_custom", "Evaluate Custom", class_="btn-outline-primary w-50"),
+                        ui.input_action_button("btn_copy_optimal", "Copy Optimal", class_="btn-outline-primary w-50"),
                         class_="d-flex gap-2 mt-3"
                     )
+                ),
+                ui.accordion_panel(
+                    "Import / Export 💾",
+                    ui.p("Save rigorous CV formulations to avoid recalculating, or load an existing one.", class_="text-muted small"),
+                    ui.input_file("formulation_upload", "Load Formulation (.pkl)", accept=[".pkl"]),
+                    ui.output_ui("formulation_export_ui")
                 ),
                 id="formulation_accordion",
                 open=["Algorithmic Design 💊"], multiple=True
@@ -209,6 +215,35 @@ def formulation_server(input, output, session, app_state: dict):
 
         ui.notification_show("Custom formulation evaluated.", type="message")
         ui.update_navset("formulation_tabs", selected="tab_form_plots")
+
+    @render.ui
+    def formulation_export_ui():
+        if current_formulation.get() is not None:
+            return ui.download_button("btn_download_formulation", "Download Formulation", class_="btn-outline-primary w-100 mt-2")
+        return ui.div()
+
+    @render.download(filename=lambda: "vaccine_formulation.pkl")
+    def btn_download_formulation():
+        vac = current_formulation.get()
+        if vac:
+            return generate_temp_download(vac.save, ".pkl", "Formulation Export Error")
+
+    @reactive.Effect
+    @reactive.event(input.formulation_upload)
+    async def load_formulation_file():
+        if not (file_info := input.formulation_upload()):
+            return
+        async with ui_task("Load Formulation Error") as p:
+            p.set(message="Loading formulation...", value=50)
+            await sleep(0)
+            vac = await to_thread(Formulation.load, Path(file_info[0]["datapath"]))
+            current_formulation.set(vac)
+            run_name = app_state["active_run_name"].get() or "Imported Run"
+            vac_name = f"Imported {vac.max_valency}-valent | {run_name}"
+            update_registry(formulation_registry, vac_name, vac)
+            app_state["active_vac_name"].set(vac_name)
+            ui.notification_show("Formulation loaded successfully!", type="message")
+            ui.update_navset("formulation_tabs", selected="tab_form_plots")
 
     # --- TAB 2: RENDERING THE DASHBOARD ---
 

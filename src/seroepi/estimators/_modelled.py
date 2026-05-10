@@ -813,30 +813,45 @@ class BayesianIncidenceEstimator(ModelledMixin, BayesianMixin, BaseEstimator[Inc
         """The NumPyro BSTS Model."""
         total_T = T + forecast_horizon
         # Priors for the latent state parameters
-        # Base log-rate at t=0
-        mu_0 = samp("mu_0", dist.Normal(0, 2).expand([n_strata]))
-        # The overarching trend (drift)
-        drift = samp("drift", dist.Normal(0, 0.5).expand([n_strata]))
-        # How volatile the month-to-month changes are
-        sigma_rw = samp("sigma_rw", dist.HalfNormal(0.5).expand([n_strata]))
-        # Overdispersion for the Negative Binomial count data
-        dispersion = samp("dispersion", dist.HalfNormal(2).expand([n_strata]))
+        with plate("strata", n_strata, dim=-1):
+            # Base log-rate at t=0
+            mu_0 = samp("mu_0", dist.Normal(0, 2))
+            # The overarching trend (drift)
+            drift = samp("drift", dist.Normal(0, 0.5))
+            # How volatile the month-to-month changes are
+            sigma_rw = samp("sigma_rw", dist.HalfNormal(0.5))
+            # Overdispersion for the Negative Binomial count data
+            dispersion = samp("dispersion", dist.HalfNormal(2))
+            
         # Gaussian Random Walk (Innovations)
-        with plate("time", total_T):
-            innovations = samp("innovations", dist.Normal(0, 1).expand([n_strata]))
+        with plate("time", T, dim=-2):
+            with plate("strata_inner", n_strata, dim=-1):
+                innovations_hist = samp("innovations", dist.Normal(0, 1))
+                
+        if forecast_horizon > 0:
+            with plate("time_future", forecast_horizon, dim=-2):
+                with plate("strata_inner_future", n_strata, dim=-1):
+                    innovations_future = samp("innovations_future", dist.Normal(0, 1))
+            innovations = jnp.concatenate([innovations_hist, innovations_future], axis=-2)
+        else:
+            innovations = innovations_hist
+                
         # Construct the Latent Log-Rate, use JAX's cumulative sum to build the random walk over time
-        rw = jnp.cumsum(innovations * sigma_rw, axis=0)
+        rw = jnp.cumsum(innovations * sigma_rw, axis=-2)
         time_steps = jnp.arange(total_T)[:, None]
         # Latent state equation: Baseline + Trend + Random Walk
         log_rate = mu_0 + (time_steps * drift) + rw
+        
         # Likelihood function
         if Y is not None:  # INFERENCE MODE (Fitting historical data)
             historical_rate = log_rate[:T]
-            with plate("historical_time", T):
-                samp("obs", dist.NegativeBinomial2(mean=jnp.exp(historical_rate), concentration=dispersion), obs=Y)
+            with plate("obs_time", T, dim=-2):
+                with plate("obs_strata", n_strata, dim=-1):
+                    samp("obs", dist.NegativeBinomial2(mean=jnp.exp(historical_rate), concentration=dispersion), obs=Y)
         else:  # FORECASTING MODE (Projecting the future)
-            with plate("all_time", total_T):
-                samp("obs", dist.NegativeBinomial2(mean=jnp.exp(log_rate), concentration=dispersion))
+            with plate("obs_time", total_T, dim=-2):
+                with plate("obs_strata", n_strata, dim=-1):
+                    samp("obs", dist.NegativeBinomial2(mean=jnp.exp(log_rate), concentration=dispersion))
 
     def fit(self, inc_df: pd.DataFrame) -> 'BayesianIncidenceEstimator':
         """Pivots the count data into a matrix and fits the BSTS model."""
