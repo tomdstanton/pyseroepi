@@ -1,7 +1,7 @@
 # 🦠💉🌍 `seroepi.app`
 *From genomes to a robust vaccine strategy in 5 minutes*
 
-`seroepi.app` is a world-class, fully featured Shiny web dashboard. You can upload data, train models, and 
+`seroepi.app` is a world-class, fully featured Shiny web dashboard. You can upload data, train models, and
 download your results without writing a single line of code.
 
 ---
@@ -35,34 +35,46 @@ shiny run seroepi.app
 
 ## 🦠 Tutorial: Cross-Population Vaccine Design & Forecasting
 
-**The Scenario:** You are a computational epidemiologist tasked with designing a novel *Klebsiella pneumoniae* capsule (K-locus) vaccine. Your primary target population is neonates suffering from sepsis in Low- and Middle-Income Countries (LMICs). However, to secure funding, you must also demonstrate whether this LMIC-optimized vaccine will provide long-term, stable coverage for adult bloodstream infections (BSIs) in High-Income Countries (HICs).
+**The Scenario:** You are a computational epidemiologist tasked with designing a novel *Klebsiella pneumoniae*
+capsule (K-locus) vaccine. Your primary target population is neonates suffering from sepsis in Low- and Middle-Income
+Countries (LMICs). However, to secure funding, you must also demonstrate whether this LMIC-optimized vaccine will
+provide long-term, stable coverage for adult bloodstream infections (BSIs) in High-Income Countries (HICs).
 
 ### Phase 1: Training the Model (LMIC Neonatal Data)
 
 #### Step 1: Load the Training Dataset
 First, we need to load our LMIC neonatal sepsis dataset.
+
 1. Navigate to the **Data Ingestion** 💽 tab on the sidebar.
 2. Under **Local Files** 📁, upload your Kleborate output CSV to the **Genotype** file input.
 3. Set the **Genotype Format** to `Pathogenwatch-Kleborate`.
 4. Upload your country data to the **Metadata (Optional)** input.
-5. A dynamic mapping menu will appear. Find the **Spatial** dropdown and select your country column (e.g., `Country`), and set the **Resolution** to `Country`.
+5. A dynamic mapping menu will appear. Find the **Spatial** dropdown and select your country column (e.g., `Country`),
+   and set the **Resolution** to `Country`.
 6. Click **Load Files**. The app will parse, validate, and merge your genomic and spatial data.
 
 #### Step 2: Aggregate the CPS Prevalence
 We need to figure out the raw proportions of each K-locus (Capsular Polysaccharide) in our dataset.
+
 1. Navigate to the **Prevalence** 🧮 tab in the sidebar and open the **Prevalence Aggregation** accordion.
 2. **Trait Column**: Select `K Locus`.
-3. **Aggregation Mode**: Select **Compositional** 🎵🎶 (since we want to know the proportion of all K-loci relative to one another, not just the presence/absence of a single gene).
+3. **Aggregation Mode**: Select **Compositional** 🎵🎶 (since we want to know the proportion of all K-loci relative to
+   one another, not just the presence/absence of a single gene).
 4. **Stratify By**: Select your spatial country column (e.g., `Spatial Country`).
-5. **Pad Zeroes**: Check this box! This is mathematically crucial for Bayesian models to understand which countries had zero observations of a specific K-locus.
+5. **Pad Zeroes**: Check this box! This is mathematically crucial for Bayesian models to understand which countries had
+   zero observations of a specific K-locus.
 6. Click **Aggregate Data**.
 
 #### Step 3: Estimate Bayesian Prevalence
-Now we use a Markov Chain Monte Carlo (MCMC) model to estimate the true population prevalence, drawing power (partial pooling) across our different countries to adjust for sampling biases.
+Now we use a Markov Chain Monte Carlo (MCMC) model to estimate the true population prevalence, drawing power (partial
+pooling) across our different countries to adjust for sampling biases.
+
 1. Open the **Prevalence Estimation** 📈 accordion.
 2. **Estimator**: Select `Bayesian Hierarchical`.
-3. Expand the **Hyperparameters** section. By default, the **Inference Method** is set to `MCMC`. You can leave the default samples (1500) and chains (4) as they are.
-4. Click **Estimate Prevalence** 🚀. *Note: MCMC is mathematically rigorous and computationally intensive. It may take a minute to converge depending on the number of countries and loci.*
+3. Expand the **Hyperparameters** section. By default, the **Inference Method** is set to `MCMC`. You can leave the
+   default samples (1500) and chains (4) as they are.
+4. Click **Estimate Prevalence** 🚀. *Note: MCMC is mathematically rigorous and computationally intensive. It may take
+   a minute to converge depending on the number of countries and loci.*
 
 #### Step 4: Formulate the Vaccine & Inspect Stability
 With our Bayesian estimates calculated, we can design the optimal multi-valent vaccine.
@@ -91,7 +103,7 @@ Because you didn't clear the memory, the app has safely overwritten the active d
 
 #### Step 6: Forecast Vaccine Longevity
 The Pathogenwatch loader automatically parses temporal metadata (Collection Date). We will use a Bayesian Structural Time Series (BSTS) to forecast how well our LMIC vaccine will cover the HIC population over time.
-1. Navigate to the **Logistics** 🔮 tab in the sidebar.
+1. Navigate to the **Logistics** 🌍 tab in the sidebar.
 2. Open the **Longevity Forecasting** accordion.
 3. **Estimator Model**: Select `Bayesian (BSTS)`.
 4. In the hyperparameters, ensure your **Forecast Horizon** is set to your desired future projection (e.g., 12 months or years, depending on your temporal resolution).

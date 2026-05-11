@@ -15,14 +15,15 @@ from seroepi.plotting import render_plot
 
 
 # Functions ------------------------------------------------------------------------------------------------------------
+# Pre-sort prefixes descending to catch 'spatial_res_' before 'spatial_' without recomputing on every call
+_DOMAIN_PREFIXES = sorted([f"{d.value}_" for d in Domain], key=len, reverse=True)
+
 def _clean_ui_label(text: Any) -> str:
     """Strips domain prefixes and title-cases strings for clean UI rendering."""
     if not isinstance(text, str):
         return str(text)
     
-    # Sort prefixes by length descending to catch 'spatial_res_' before 'spatial_'
-    prefixes = sorted([f"{d.value}_" for d in Domain], key=len, reverse=True)
-    for prefix in prefixes:
+    for prefix in _DOMAIN_PREFIXES:
         if text.startswith(prefix):
             text = text.replace(prefix, "", 1)
             break
@@ -159,45 +160,76 @@ HYPERPARAM_TOOLTIPS = {
     "forecast_horizon": "Number of future time steps to project the model forward past the observed data."
 }
 
-def build_estimator_params_ui(EstimatorClass: Any, prefix: str = "est_param_", exclude: list[str] = None, default_overrides: dict = None) -> ui.Tag:
-    """Dynamically builds UI inputs for an estimator's hyperparameters with tooltips."""
-    if exclude is None: exclude = ['self']
-    if default_overrides is None: default_overrides = {}
+class EstimatorIntrospector:
+    """Stateful cache for estimator reflection and hyperparameter parsing."""
+    _signature_cache = {}
 
-    sig = inspect.signature(EstimatorClass.__init__)
-    elements = []
+    def __init__(self, estimator_class: Any):
+        self.cls = estimator_class
+        if self.cls not in self._signature_cache:
+            self._signature_cache[self.cls] = inspect.signature(self.cls.__init__)
+        self.sig = self._signature_cache[self.cls]
 
-    for name, param in sig.parameters.items():
-        if name in exclude:
-            continue
+    def build_ui(self, prefix: str = "est_param_", exclude: list[str] = None, default_overrides: dict = None) -> ui.Tag:
+        if exclude is None: exclude = ['self']
+        if default_overrides is None: default_overrides = {}
 
-        input_id = f"{prefix}{name}"
-        label = name.replace("_", " ").title()
-        default = default_overrides.get(name, param.default if param.default != inspect.Parameter.empty else None)
-        origin = get_origin(param.annotation)
+        elements = []
+        for name, param in self.sig.parameters.items():
+            if name in exclude:
+                continue
 
-        inp = None
-        if param.annotation is int or param.annotation is float:
-            inp = ui.input_numeric(input_id, label, value=default)
-        elif param.annotation is bool:
-            inp = ui.input_checkbox(input_id, label, value=default)
-        elif origin is Literal:
-            choices = get_args(param.annotation)
-            choices_dict = {c: str(c).replace('_', ' ').title() for c in choices}
-            inp = ui.input_select(input_id, label, choices=choices_dict, selected=default)
-        elif 'InferenceMethod' in str(param.annotation):
-            default_val = default.value if hasattr(default, 'value') else default
-            inp = ui.input_select(input_id, label, choices=BayesianInferenceMethod.ui_labels(), selected=default_val)
+            input_id = f"{prefix}{name}"
+            label = name.replace("_", " ").title()
+            default = default_overrides.get(name, param.default if param.default != inspect.Parameter.empty else None)
+            origin = get_origin(param.annotation)
 
-        if inp is not None:
-            tooltip_text = HYPERPARAM_TOOLTIPS.get(name)
-            if tooltip_text:
-                inp = ui.tooltip(inp, tooltip_text)
-            elements.append(inp)
+            inp = None
+            if param.annotation is int or param.annotation is float:
+                inp = ui.input_numeric(input_id, label, value=default)
+            elif param.annotation is bool:
+                inp = ui.input_checkbox(input_id, label, value=default)
+            elif origin is Literal:
+                choices = get_args(param.annotation)
+                choices_dict = {c: str(c).replace('_', ' ').title() for c in choices}
+                inp = ui.input_select(input_id, label, choices=choices_dict, selected=default)
+            elif 'InferenceMethod' in str(param.annotation):
+                default_val = default.value if hasattr(default, 'value') else default
+                inp = ui.input_select(input_id, label, choices=BayesianInferenceMethod.ui_labels(), selected=default_val)
 
-    if elements:
-        return ui.div(ui.hr(), ui.p("Hyperparameters", class_="text-muted small mb-1"), *elements)
-    return ui.div()
+            if inp is not None:
+                tooltip_text = HYPERPARAM_TOOLTIPS.get(name)
+                if tooltip_text:
+                    inp = ui.tooltip(inp, tooltip_text)
+                elements.append(inp)
+
+        if elements:
+            return ui.div(ui.hr(), ui.p("Hyperparameters", class_="text-muted small mb-1"), *elements)
+        return ui.div()
+
+    def extract_kwargs(self, shiny_input: Any, prefix: str = "est_param_", exclude: list[str] = None) -> dict:
+        if exclude is None: exclude = ['self']
+        kwargs = {}
+
+        for name, param in self.sig.parameters.items():
+            if name in exclude:
+                continue
+
+            input_id = f"{prefix}{name}"
+            if input_id in shiny_input:
+                val = shiny_input[input_id]()
+                if val == "":  # Skip empty inputs to fallback on defaults
+                    continue
+
+                origin = get_origin(param.annotation)
+                if param.annotation is int: kwargs[name] = int(val)
+                elif param.annotation is float: kwargs[name] = float(val)
+                elif param.annotation is bool: kwargs[name] = bool(val)
+                elif origin is Literal: kwargs[name] = val
+                elif 'InferenceMethod' in str(param.annotation): kwargs[name] = BayesianInferenceMethod(val)
+                else: kwargs[name] = val
+
+        return kwargs
 
 # UIs ------------------------------------------------------------------------------------------------------------------
 @module.ui

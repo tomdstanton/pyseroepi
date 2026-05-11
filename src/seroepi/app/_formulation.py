@@ -58,10 +58,10 @@ def formulation_ui():
             width=350
         ),
         ui.navset_card_tab(
-            ui.nav_panel("Plots 📊", ui.output_ui("form_plots_content"), value="tab_form_plots"),
             ui.nav_panel("Rankings 🏆", ui.output_ui("form_rankings_content"), value="tab_form_rankings"),
             ui.nav_panel("Stability Metrics ⚖️", ui.output_ui("form_stability_content"), value="tab_form_stability"),
             ui.nav_panel("Permutations 🔄", ui.output_ui("form_history_content"), value="tab_form_permutations"),
+            ui.nav_panel("Plots 📊", ui.output_ui("form_plots_content"), value="tab_form_plots"),
             id="formulation_tabs"
         )
     )
@@ -70,26 +70,18 @@ def formulation_ui():
 @module.server
 def formulation_server(input, output, session, app_state: dict):
     shared_df = app_state["shared_df"]
-    baseline_res = app_state["baseline_res"]
-    current_formulation = app_state["current_formulation"]
     shared_agg_df = app_state["shared_agg_df"]
     prev_results = app_state["prev_results"]
     fitted_estimator = app_state["fitted_estimator"]
-    results_registry = app_state.setdefault("results_registry", reactive.Value({}))
-    formulation_registry = app_state.setdefault("formulation_registry", reactive.Value({}))
+    baseline_res = app_state["baseline_res"]
+    current_formulation = app_state["current_formulation"]
+    results_registry = app_state["results_registry"]
+    formulation_registry = app_state["formulation_registry"]
 
     @reactive.Effect
-    async def manage_form_tabs():
-        vac = current_formulation.get()
-        has_vac = vac is not None
-        has_stability = has_vac and not vac.stability_metrics.empty
-        
-        for tab, show in [
-            ("tab_form_rankings", has_vac),
-            ("tab_form_stability", has_stability),
-            ("tab_form_permutations", has_stability)
-        ]:
-            await session.send_custom_message("toggle_tab", {"tab": tab, "show": show})
+    def manage_accordion_state():
+        if prev_results.get() is None:
+            ui.update_accordion("formulation_accordion", show="Algorithmic Design 💊")
 
     @reactive.Effect
     def update_form_inputs():

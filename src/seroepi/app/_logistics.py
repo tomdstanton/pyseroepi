@@ -1,16 +1,14 @@
-import inspect
 from pathlib import Path
-from typing import get_origin, Literal
 from dataclasses import fields
 from shiny import ui, module, reactive, render
 from shinywidgets import output_widget, render_widget
 from plotly.graph_objs import Figure
 from asyncio import to_thread, sleep
 
-from seroepi.constants import PlotType, Domain, BayesianInferenceMethod, TemporalResolution
+from seroepi.constants import PlotType, Domain, TemporalResolution
 from seroepi import estimators
-from seroepi.app._utils import dt_download_server, dt_download_ui, format_metadata_ui, safe_plot_ui, safe_plot_server, ui_task, build_grouped_choices, generate_temp_download, \
-    build_estimator_params_ui, export_settings_ui
+from seroepi.app._utils import (dt_download_server, dt_download_ui, format_metadata_ui, ui_task, build_grouped_choices,
+                                generate_temp_download, EstimatorIntrospector, export_settings_ui)
 from seroepi.plotting import render_plot
 
 
@@ -50,7 +48,7 @@ def logistics_ui():
             ui.nav_panel("Estimates 📈", ui.output_ui("logistics_est_content"), value="tab_logistics_est"),
             ui.nav_panel("Diagnostics 🩺", ui.output_ui("logistics_diag_content"), value="tab_logistics_diag"),
             ui.nav_panel(
-                "Logistics Plots 📊",
+                "Plots 📊",
                 ui.layout_sidebar(
                     ui.sidebar(
                         ui.tooltip(
@@ -84,9 +82,11 @@ def logistics_ui():
 def logistics_server(input, output, session, app_state: dict):
     """Server logic for clinical trial site selection and spatial density analysis."""
     shared_df = app_state["shared_df"]
+    current_formulation = app_state["current_formulation"]
+
+    # Module-specific state
     shared_agg_inc_df = app_state.setdefault("shared_agg_inc_df", reactive.Value(None))
     shared_forecast = app_state.setdefault("shared_forecast", reactive.Value(None))
-    current_formulation = app_state["current_formulation"]
     fitted_longevity_estimator = app_state.setdefault("fitted_longevity_estimator", reactive.Value(None))
     ESTIMATOR_MAP = {
         "bayesian": "BayesianIncidenceEstimator",
@@ -101,18 +101,9 @@ def logistics_server(input, output, session, app_state: dict):
             ui.update_selectize("logistics_stratify", choices=strat_choices)
 
     @reactive.Effect
-    async def manage_tabs():
-        df = shared_df.get()
-        vac = current_formulation.get()
-        has_vac = bool(vac is not None)
-        has_agg = bool(shared_agg_inc_df.get() is not None)
-        has_est = bool(shared_forecast.get() is not None)
-        est_model = fitted_longevity_estimator.get()
-
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_agg", "show": has_agg})
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_est", "show": has_est})
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_diag", "show": has_est and hasattr(est_model, 'diagnostics')})
-        await session.send_custom_message("toggle_tab", {"tab": "tab_logistics_plots", "show": has_vac})
+    def manage_accordion_state():
+        if shared_df.get() is None or current_formulation.get() is None:
+            ui.update_accordion("logistics_accordion", show="Incidence Aggregation 🧮")
 
     @reactive.Calc
     def covered_df():
@@ -120,7 +111,6 @@ def logistics_server(input, output, session, app_state: dict):
         vac = current_formulation.get()
         if df is None or vac is None: return None
         
-        df = df.copy()
         targets = vac.get_formulation()
         
         if vac.trait not in df.columns:
@@ -128,10 +118,10 @@ def logistics_server(input, output, session, app_state: dict):
             return None
             
         # Assign binary coverage trait
-        df['Vaccine_Coverage'] = False
+        coverage_series = pd.Series(False, index=df.index)
         valid_mask = df[vac.trait].notna()
-        df.loc[valid_mask, 'Vaccine_Coverage'] = df.loc[valid_mask, vac.trait].isin(targets)
-        return df
+        coverage_series.loc[valid_mask] = df.loc[valid_mask, vac.trait].isin(targets)
+        return df.assign(Vaccine_Coverage=coverage_series)
 
     @reactive.Effect
     @reactive.event(input.btn_aggregate_incidence)
@@ -219,8 +209,7 @@ def logistics_server(input, output, session, app_state: dict):
                 )
             )
             
-        return build_estimator_params_ui(
-            EstimatorClass, 
+        return EstimatorIntrospector(EstimatorClass).build_ui(
             prefix="longevity_param_", 
             exclude=['self'], 
             default_overrides={'use_relative_incidence': False}
@@ -305,23 +294,11 @@ def logistics_server(input, output, session, app_state: dict):
                 forecast_res = await to_thread(est.predict, inc_df)
                 
             else:
-                kwargs = {}
-                sig = inspect.signature(EstimatorClass.__init__)
-                for name, param in sig.parameters.items():
-                    if name in ['self']: continue
-                        
-                    input_id = f"longevity_param_{name}"
-                    if input_id in input:
-                        val = input[input_id]()
-                        if val == "": continue
-                            
-                        origin = get_origin(param.annotation)
-                        if param.annotation is int: kwargs[name] = int(val)
-                        elif param.annotation is float: kwargs[name] = float(val)
-                        elif param.annotation is bool: kwargs[name] = bool(val)
-                        elif origin is Literal: kwargs[name] = val
-                        elif 'InferenceMethod' in str(param.annotation): kwargs[name] = BayesianInferenceMethod(val)
-                        else: kwargs[name] = val
+                kwargs = EstimatorIntrospector(EstimatorClass).extract_kwargs(
+                    input, 
+                    prefix="longevity_param_", 
+                    exclude=['self']
+                )
                             
                 est = EstimatorClass(**kwargs)
                 p.set(message="Fitting model and forecasting...", value=60)
@@ -448,21 +425,25 @@ def logistics_server(input, output, session, app_state: dict):
         
         try:
             if p_type == PlotType.LONGEVITY.value:
-                if forecast is None: return
+                if forecast is None:
+                    return None
                 fig = render_plot(vac, PlotType.LONGEVITY, forecast=forecast)
             elif p_type == PlotType.EPICURVE.value:
-                if forecast is None: return
+                if forecast is None:
+                    return None
                 fig = render_plot(forecast, PlotType.EPICURVE)
             elif p_type == PlotType.FOREST.value:
                 res = general_coverage_res()
-                if res is None: return
+                if res is None:
+                    return None
                 fig = render_plot(res, PlotType.FOREST)
             elif p_type == PlotType.CHOROPLETH.value:
                 res_dict = spatial_coverage_res()
-                if res_dict is None: return
+                if res_dict is None:
+                    return None
                 fig = render_plot(res_dict['res'], PlotType.CHOROPLETH, geo_col=res_dict['geo_col'])
             else:
-                return
+                return None
                 
             def save_fig(p: Path):
                 fig.write_image(p, format=input.logistics_plot_format(), width=input.logistics_plot_width(), height=input.logistics_plot_height())

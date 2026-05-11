@@ -1,14 +1,11 @@
-import inspect
 from pathlib import Path
-from typing import get_origin, Literal, get_args
 from dataclasses import fields
 from shiny import ui, module, reactive, render
 from asyncio import to_thread, sleep
 
 from seroepi import estimators
 from seroepi.app._utils import dt_download_server, dt_download_ui, format_metadata_ui, safe_plot_server, safe_plot_ui, \
-    ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices, update_registry, export_settings_ui, \
-    build_estimator_params_ui
+    ui_task, generate_temp_download, _clean_ui_label, build_grouped_choices, update_registry, export_settings_ui, EstimatorIntrospector
 from seroepi.constants import PlotType, EstimatorType, AggregationType, BayesianInferenceMethod
 from seroepi.plotting import render_plot
 
@@ -69,7 +66,7 @@ def prevalence_ui():
             ui.nav_panel("Estimates 📈", ui.output_ui("prev_summary_content"), value="tab_prevalence_data"),
             ui.nav_panel("Diagnostics 🩺", ui.output_ui("model_diagnostics_content"), value="tab_model_diagnostics"),
             ui.nav_panel(
-                "Prevalence Plot 📊",
+                "Plots 📊",
                 ui.layout_sidebar(
                     ui.sidebar(
                         ui.tooltip(
@@ -102,25 +99,10 @@ def prevalence_ui():
 @module.server
 def prevalence_server(input, output, session, app_state: dict):
     shared_df = app_state["shared_df"]
+    shared_agg_df = app_state["shared_agg_df"]
     prev_results = app_state["prev_results"]
     fitted_estimator = app_state["fitted_estimator"]
-    shared_agg_df = app_state.setdefault("shared_agg_df", reactive.Value(None))
-
-    # --- STAGE 0: DYNAMIC TAB VISIBILITY ---
-    @reactive.Effect
-    async def manage_tab_visibility():
-        try:
-            est = fitted_estimator.get()
-            tabs = [
-                ("tab_aggregated_data", shared_agg_df.get() is not None),
-                ("tab_prevalence_data", prev_results.get() is not None),
-                ("tab_prevalence_plot", prev_results.get() is not None),
-                ("tab_model_diagnostics", est is not None and hasattr(est, 'diagnostics'))
-            ]
-            for tab, show in tabs:
-                await session.send_custom_message("toggle_tab", {"tab": tab, "show": show})
-        except Exception as e:
-            print(f"Error in manage_tab_visibility: {e}")
+    results_registry = app_state["results_registry"]
 
     @reactive.Effect
     def manage_accordion_state():
@@ -178,8 +160,7 @@ def prevalence_server(input, output, session, app_state: dict):
                 )
             )
 
-        return build_estimator_params_ui(
-            EstimatorClass, 
+        return EstimatorIntrospector(EstimatorClass).build_ui(
             prefix="est_param_", 
             exclude=['self', 'target_event', 'target_n', 'lat_col', 'lon_col']
         )
@@ -330,32 +311,11 @@ def prevalence_server(input, output, session, app_state: dict):
                 res = await to_thread(est.predict, agg_df)
             else:
                 # Dynamically extract and assign kwargs for the selected estimator class
-                kwargs = {}
-                sig = inspect.signature(EstimatorClass.__init__)
-                for name, param in sig.parameters.items():
-                    if name in ['self', 'target_event', 'target_n', 'lat_col', 'lon_col']:
-                        continue
-
-                    input_id = f"est_param_{name}"
-                    if input_id in input:
-                        val = input[input_id]()
-                        if val == "":  # Skip empty numeric inputs to fallback on defaults
-                            continue
-
-                        origin = get_origin(param.annotation)
-
-                        if param.annotation is int:
-                            kwargs[name] = int(val)
-                        elif param.annotation is float:
-                            kwargs[name] = float(val)
-                        elif param.annotation is bool:
-                            kwargs[name] = bool(val)
-                        elif origin is Literal:
-                            kwargs[name] = val
-                        elif 'InferenceMethod' in str(param.annotation):
-                            kwargs[name] = BayesianInferenceMethod(val)
-                        else:
-                            kwargs[name] = val
+                kwargs = EstimatorIntrospector(EstimatorClass).extract_kwargs(
+                    input, 
+                    prefix="est_param_", 
+                    exclude=['self', 'target_event', 'target_n', 'lat_col', 'lon_col']
+                )
 
                 # Ensure SpatialPrevalenceEstimator maps correctly to Pandas generated columns
                 if estimator_class_name == "SpatialPrevalenceEstimator":
@@ -378,12 +338,12 @@ def prevalence_server(input, output, session, app_state: dict):
             ds_name = current_df.attrs.get("dataset_name",
                                            "Unknown Dataset") if current_df is not None else "Unknown Dataset"
             run_name = f"[{ds_name}] {trait_clean} by {strata_str} ({EstimatorType(est_type).name.title()})"
-            update_registry(app_state.setdefault("results_registry", reactive.Value({})), run_name, {"res": res, "est": est, "agg_df": agg_df})
+            update_registry(results_registry, run_name, {"res": res, "est": est, "agg_df": agg_df})
             app_state["active_run_name"].set(run_name)
 
-            ui.notification_show("Prevalence calculated successfully! Check the plot tab.", type="message")
+            ui.notification_show("Prevalence calculated successfully!", type="message")
             p.set(message="Done", value=100)
-            ui.update_navset("main_dashboard_tabs", selected="tab_prevalence_plot")
+            ui.update_navset("main_dashboard_tabs", selected="tab_prevalence_data")
             await sleep(0)
 
     # --- STAGE 4: RENDERING THE DASHBOARDS ---

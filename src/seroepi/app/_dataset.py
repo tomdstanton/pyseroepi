@@ -53,6 +53,30 @@ def dataset_ui():
                                 class_="mt-3"
                             )
                         ),
+                        ui.nav_panel(
+                            ui.tooltip("Example Data 🧪", "Load a pre-configured example dataset."),
+                            ui.div(
+                                ui.p("Load the KlebNET Neonatal Sepsis example dataset. This includes 981 "
+                                     "genomes, along with spatio-temporta; metadata and a pairwise SNP distance matrix.",
+                                     class_="text-muted small mb-3"),
+                                ui.input_action_button("btn_load_example", "Load Example Data", class_="btn-primary w-100"),
+                                class_="mt-3"
+                            )
+                        ),
+                        ui.nav_panel(
+                            ui.tooltip("Kaptive Web 🕷️",
+                                       "Coming soon..."),
+                            # ui.div(
+                            #     ui.tooltip(ui.input_password("kw_api_key", "API Key"),
+                            #                "Your Kaptive Web API key for authenticating secure downloads."),
+                            #     ui.input_action_button("btn_fetch_kw", "Fetch Results",
+                            #                            class_="btn-outline-primary w-100 mb-3"),
+                            #     ui.input_selectize("pw_collection", "Select Collection", choices=[]),
+                            #     ui.hr(),
+                            #     ui.input_action_button("btn_load_pw", "Load Result", class_="btn-primary w-100"),
+                            #     class_="mt-3"
+                            # )
+                        ),
                     ),
                     ui.hr(),
                     ui.input_action_button("btn_clear_data", "Clear All Data", class_="btn-outline-danger w-100")
@@ -127,11 +151,6 @@ def dataset_server(input, output, session, app_state: dict):
     shared_dist = app_state["shared_dist"]
     shared_trans_dist = app_state.setdefault("shared_trans_dist", reactive.Value(None))
     dataset_registry = app_state.setdefault("dataset_registry", reactive.Value({}))
-
-    @reactive.Effect
-    async def manage_tab_visibility():
-        has_network = shared_dist.get() is not None or shared_trans_dist.get() is not None
-        await session.send_custom_message("toggle_tab", {"tab": "tab_cluster_network", "show": has_network})
 
     @reactive.Effect
     def manage_accordion_state():
@@ -220,6 +239,45 @@ def dataset_server(input, output, session, app_state: dict):
                 ui.update_accordion("dataset_accordion", show="Data Ingestion")
 
     @reactive.Effect
+    @reactive.event(input.btn_load_example)
+    async def load_example_data():
+        async with ui_task("Example Pipeline Error") as p:
+            p.set(message="Loading example datasets...", value=20)
+            await sleep(0)
+
+            base_path = Path(__file__).parent / "data"
+            genotype_path = base_path / "pathogenwatch-klepn-klebnet-neonatal-sepsis-kleborate.csv"
+            meta_path = base_path / "pathogenwatch-klepn-klebnet-neonatal-sepsis-metadata.csv"
+            dist_path = base_path / "pathogenwatch-klepn-klebnet-neonatal-sepsis-difference-matrix.csv"
+
+            ds_name = "Neonatal Sepsis (Example)"
+            metadata_kwargs = {
+                "id_col": "NAME",
+                "date_col": "COLLECTION DATE",
+                "spatial_col": "COUNTRY",
+                "lat_col": "LATITUDE",
+                "lon_col": "LONGITUDE"
+            }
+
+            ParserClass = BaseGenotypeParser.get_parser("pathogenwatch-kleborate")
+            df = await to_thread(ParserClass.from_files, genotype_path=genotype_path, meta_path=meta_path, meta_kwargs=metadata_kwargs, dataset_name=ds_name)
+            
+            p.set(message="Parsing Distances...", value=60)
+            await sleep(0)
+            dist_obj = await to_thread(GenomicDistances.from_file, dist_path, "pathogenwatch")
+
+            p.set(message="Pipeline Complete!", value=100)
+            await sleep(0)
+            
+            shared_df.set(df)
+            shared_dist.set(dist_obj)
+            shared_trans_dist.set(None)
+            update_registry(dataset_registry, ds_name, {"df": df, "dist": dist_obj, "trans_dist": None})
+            app_state["active_dataset_name"].set(ds_name)
+            
+            ui.notification_show("Example data successfully loaded.", type="message", duration=4)
+
+    @reactive.Effect
     @reactive.event(input.btn_fetch_pw)
     async def fetch_pw_collections():
         api_key = input.pw_api_key()
@@ -228,29 +286,28 @@ def dataset_server(input, output, session, app_state: dict):
             return
 
         async with ui_task("API Error") as p:
-                p.set(message="Connecting to Pathogenwatch...", value=30)
-                await sleep(0)
-                def fetch_collections():
-                    if hasattr(PathogenwatchClient, '__enter__'):
-                        with PathogenwatchClient(api_key) as client: return client.get_collections()
-                    else:
-                        return PathogenwatchClient(api_key).get_collections()
-                raw_collections = await to_thread(fetch_collections)
-                collections = raw_collections.get("data", raw_collections.get("collections", [])) if isinstance(raw_collections, dict) else list(raw_collections)
-                if not collections:
-                    ui.notification_show("No collections found.", type="warning")
-                    return
-                def get_val(obj, key, default=""): return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
-                collections.sort(key=lambda x: str(get_val(x, 'name')).lower() if get_val(x, 'name') else "")
-                cache_map, choices_map = {}, {"": "Select..."}
-                for c in collections:
-                    if c_id := get_val(c, 'uuid', get_val(c, 'id')):
-                        cache_map[c_id] = c
-                        choices_map[c_id] = get_val(c, 'name') or "Unnamed Collection"
-                pw_collections_cache.set(cache_map)
-                ui.update_selectize("pw_collection", choices=choices_map)
-                p.set(message="Collections fetched!", value=100)
-                ui.notification_show(f"Found {len(collections)} collections.", type="message")
+            p.set(message="Connecting to Pathogenwatch...", value=30)
+            await sleep(0)
+
+            def fetch_collections():
+                with PathogenwatchClient(api_key) as client:
+                    return list(client.get_collections())
+
+            collections = await to_thread(fetch_collections)
+
+            if not collections:
+                ui.notification_show("No collections found.", type="warning")
+                return
+
+            collections.sort(key=lambda c: (c.name or "").lower())
+            cache_map = {c.uuid: c for c in collections}
+            choices_map = {"": "Select..."}
+            choices_map.update({c.uuid: c.name or "Unnamed Collection" for c in collections})
+
+            pw_collections_cache.set(cache_map)
+            ui.update_selectize("pw_collection", choices=choices_map)
+            p.set(message="Collections fetched!", value=100)
+            ui.notification_show(f"Found {len(collections)} collections.", type="message")
 
     @reactive.Effect
     @reactive.event(input.btn_load_pw)
@@ -260,21 +317,20 @@ def dataset_server(input, output, session, app_state: dict):
         collection = cache[selected_uuid]
 
         async with ui_task("Load Error") as p:
-                name = collection.get("name", "Collection") if isinstance(collection, dict) else getattr(collection, "name", "Collection")
+                name = collection.name or "Collection"
                 p.set(message=f"Fetching genomes for {name}...", value=30)
                 await sleep(0)
+
                 def fetch_genomes():
-                    if hasattr(PathogenwatchClient, '__enter__'):
-                        with PathogenwatchClient(api_key) as client:
-                            return collection.get_genomes(client) if hasattr(collection, 'get_genomes') else client.get_genomes(collection.get('uuid', collection.get('id')))
-                    else:
-                        c = PathogenwatchClient(api_key)
-                        return collection.get_genomes(c) if hasattr(collection, 'get_genomes') else c.get_genomes(collection.get('uuid', collection.get('id')))
-                raw_genomes = await to_thread(fetch_genomes)
-                genomes = raw_genomes.get("data", raw_genomes.get("genomes", [])) if isinstance(raw_genomes, dict) else list(raw_genomes)
+                    with PathogenwatchClient(api_key) as client:
+                        return collection.get_genomes(client)
+
+                genomes = await to_thread(fetch_genomes)
+
                 if not genomes:
                     ui.notification_show("Collection is empty.", type="warning")
                     return
+
                 p.set(message="Parsing to DataFrame...", value=80)
                 await sleep(0)
                 df = await to_thread(PathogenwatchGenomeParser.from_records, genomes, dataset_name=name)
@@ -331,14 +387,18 @@ def dataset_server(input, output, session, app_state: dict):
                     ui.notification_show("Requires both spatial and temporal metadata.", type="error")
                     return
                 def run_trans_clusters():
-                    net = df.epi.transmission_network(clone_col=input.trans_clone_col(), spatial_threshold_km=input.trans_spatial_thr(), temporal_threshold_days=input.trans_temporal_thr())
-                    labels = df.epi.transmission_clusters(clone_col=input.trans_clone_col(), spatial_threshold_km=input.trans_spatial_thr(), temporal_threshold_days=input.trans_temporal_thr(), network=net)
+                    net = df.epi.transmission_network(clone_col=input.trans_clone_col(),
+                                                      spatial_threshold_km=input.trans_spatial_thr(),
+                                                      temporal_threshold_days=input.trans_temporal_thr())
+                    labels = df.epi.transmission_clusters(clone_col=input.trans_clone_col(),
+                                                          spatial_threshold_km=input.trans_spatial_thr(),
+                                                          temporal_threshold_days=input.trans_temporal_thr(),
+                                                          network=net)
                     return net, labels
                 t_net, t_clusters = await to_thread(run_trans_clusters)
                 shared_trans_dist.set(t_net)
                 if t_clusters.name in df.columns: df = df.drop(columns=[t_clusters.name])
-                df = df.copy()
-                df[t_clusters.name] = t_clusters
+                df = df.assign(**{t_clusters.name: t_clusters})
                 shared_df.set(df)
                 
                 ds_name = app_state["active_dataset_name"].get()
