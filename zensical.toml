@@ -24,7 +24,6 @@ features = [
     "navigation.sections",
     "navigation.expand",
     "navigation.top",          # Added: Back-to-top button
-    "toc.integrate",           # Added: Merges TOC into the left sidebar
     "search.suggest",          # Added: Smarter search
     "search.highlight",        # Added: Highlights search terms
     "content.code.copy"
