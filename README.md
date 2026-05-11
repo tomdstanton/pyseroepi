@@ -39,6 +39,15 @@ uv pip install seroepi[models,plot]
 
 ---
 
+## 📖 Nomenclature: Traits vs. Targets
+
+To ensure clarity across epidemiological modeling and vaccine design, `seroepi` strictly defines:
+* **Trait**: The overarching epidemiological variable or genomic locus being modeled (e.g., `K_locus`, `O_locus`, `amr_KPC`).
+* **Target**: The specific variant or level within that trait (e.g., `K1`, `K2`, `K3`).
+
+When aggregating data, you specify the overarching *Trait* column, and the resulting DataFrames will standardize the individual variants into a `target` column for unified downstream processing.
+---
+
 ## 💻 Python API Quickstart
 
 If you prefer working in Jupyter Notebooks or Python scripts, `seroepi` extends standard Pandas DataFrames to make bioinformatics workflows effortless.
@@ -80,7 +89,7 @@ df = df.join(clusters, on='sample_id')
 from seroepi.estimators import FrequentistPrevalenceEstimator
 
 # Aggregate the data to find the prevalence of K-loci across different countries
-agg_df = df.epi.aggregate_prevalence(stratify_by=['country'], target_col='K_locus')
+agg_df = df.epi.aggregate_prevalence(stratify_by=['country'], trait_col='K_locus')
 
 # Fit the estimator
 estimator = FrequentistPrevalenceEstimator(method='wilson')

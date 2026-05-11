@@ -54,6 +54,7 @@ code = "JetBrains Mono"
 
 [markdown_extensions]
 admonition = {}
+toc = {toc_depth = 3}
 "pymdownx.details" = {}
 "pymdownx.superfences" = {}
 "pymdownx.tabbed" = { alternate_style = true }

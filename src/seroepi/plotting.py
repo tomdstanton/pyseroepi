@@ -138,7 +138,7 @@ class CompositionBarPlotter(BasePlotter):
             raise ValueError("Composition Bar Plot strictly requires Compositional aggregation mode.")
 
         df = result.data.copy()
-        trait_col = 'trait'
+        target_col = 'target'
         group_cols = result.stratified_by
         strata_label = ', '.join(result.stratified_by) if result.stratified_by else "Global"
         title_prefix = "Sample Composition"
@@ -147,10 +147,10 @@ class CompositionBarPlotter(BasePlotter):
 
         # We calculate the global rank of the targets to ensure the colors and stack
         # order remain perfectly consistent across all bars
-        target_ranks = df.groupby(trait_col)['estimate'].sum().sort_values(ascending=False).index
+        target_ranks = df.groupby(target_col)['estimate'].sum().sort_values(ascending=False).index
 
         # OPTIMIZATION: Pre-group the dataframe to prevent O(N^2) dataframe masking loops
-        grouped_df = dict(tuple(df.groupby(trait_col)))
+        grouped_df = dict(tuple(df.groupby(target_col)))
 
         if not group_cols:
             # --- 1 VARIABLE: Global Composition ---
@@ -206,7 +206,7 @@ class CompositionHeatmapPlotter(BasePlotter):
             x_col = result.stratified_by[1]
             title_prefix = "Prevalence Matrix"
         else:
-            y_col = 'trait'
+            y_col = 'target'
             group_cols = result.stratified_by
             if len(group_cols) != 1:
                 raise ValueError(
@@ -258,28 +258,26 @@ class ForestPlotter(BasePlotter):
         is_comp = result.aggregation_type == AggregationType.COMPOSITIONAL
 
         if is_comp:
-            y_col = 'trait'
+            y_col = 'target'
             group_cols = result.stratified_by
             color_col = group_cols[0] if group_cols else None
             
             # --- CLEARNESS FIX FOR COMPOSITIONAL DATA ---
             # 1. Truncate to top N variants to prevent vertical overcrowding
             top_n = kwargs.get('top_n', 20)
-            trait_totals = df.groupby(y_col)['estimate'].sum().sort_values(ascending=False)
+            target_totals = df.groupby(y_col)['estimate'].sum().sort_values(ascending=False)
             
-            is_truncated = len(trait_totals) > top_n
+            is_truncated = len(target_totals) > top_n
             if is_truncated:
-                top_traits = trait_totals.head(top_n).index
-                df = df[df[y_col].isin(top_traits)]
-                trait_totals = trait_totals.loc[top_traits]
+                top_targets = target_totals.head(top_n).index
                 
             # 2. Create an ordered array for the Y-axis 
-            y_order = trait_totals.index.tolist()
+            y_order = target_totals.index.tolist()
             df[y_col] = pd.Categorical(df[y_col], categories=y_order, ordered=True)
             df = df.sort_values([color_col, y_col]) if color_col else df.sort_values(y_col)
             
         else:
-            y_col = result.stratified_by[0] if result.stratified_by else 'trait'
+            y_col = result.stratified_by[0] if result.stratified_by else 'target'
             color_col = result.stratified_by[1] if len(result.stratified_by) > 1 else None
             is_truncated = False
 
@@ -508,7 +506,7 @@ class CumulativeCoveragePlotter(BasePlotter):
             target_order = formulation.get_formulation()
         else:
             # Sort strictly by raw count to simulate prioritizing the most common variants globally
-            target_order = data.groupby('trait')['event'].sum().sort_values(ascending=False).index.tolist()
+            target_order = data.groupby('target')['event'].sum().sort_values(ascending=False).index.tolist()
             if max_valencies:
                 target_order = target_order[:max_valencies]
 
@@ -520,8 +518,8 @@ class CumulativeCoveragePlotter(BasePlotter):
 
         if not group_cols:
             # --- GLOBAL COVERAGE ---
-            grouped = data.groupby('trait', observed=True)['estimate'].sum().reindex(target_order).fillna(0)
-            grouped_var = data.groupby('trait', observed=True)['var'].sum().reindex(target_order).fillna(0)
+            grouped = data.groupby('target', observed=True)['estimate'].sum().reindex(target_order).fillna(0)
+            grouped_var = data.groupby('target', observed=True)['var'].sum().reindex(target_order).fillna(0)
             
             cum_prop = grouped.cumsum().clip(0, 1)
             cum_se = np.sqrt(grouped_var.cumsum())
@@ -559,8 +557,8 @@ class CumulativeCoveragePlotter(BasePlotter):
             strata_label = f"Stratified by {cls._clean_label(color_col)}"
             
             for i, (stratum, group_df) in enumerate(data.groupby(color_col, observed=True)):
-                grouped = group_df.groupby('trait', observed=True)['estimate'].sum().reindex(target_order).fillna(0)
-                grouped_var = group_df.groupby('trait', observed=True)['var'].sum().reindex(target_order).fillna(0)
+                grouped = group_df.groupby('target', observed=True)['estimate'].sum().reindex(target_order).fillna(0)
+                grouped_var = group_df.groupby('target', observed=True)['var'].sum().reindex(target_order).fillna(0)
                 
                 cum_prop = grouped.cumsum().clip(0, 1)
                 cum_se = np.sqrt(grouped_var.cumsum())
@@ -623,9 +621,9 @@ class ChoroplethPlotter(BasePlotter):
         if result.aggregation_type == AggregationType.COMPOSITIONAL:
             if target_variant is None:
                 # Safely default to the most frequent variant if the user forgot to specify one
-                target_variant = data.groupby('trait')['event'].sum().idxmax()
+                target_variant = data.groupby('target')['event'].sum().idxmax()
 
-            data = data[data['trait'] == target_variant]
+            data = data[data['target'] == target_variant]
             target_name = f"{cls._clean_label(result.trait)}: {target_variant}"
 
         # Lazy-load the default map if none supplied
@@ -768,7 +766,6 @@ class AlphaDiversityPlotter(BasePlotter):
         ))
 
 
-
 class BetaHeatmapPlotter(BasePlotter):
     SUPPORTED_TYPES = (estimators.BetaDiversityEstimates,)
 
@@ -832,14 +829,14 @@ class StabilityBumpPlotter(BasePlotter):
         fig = go.Figure()
 
         # We only want to plot the lines for targets that actually made it into the baseline _formulation
-        top_targets = baseline.head(valency)['trait'].tolist()
+        top_targets = baseline.head(valency)['target'].tolist()
 
         # X-axis categories: Baseline first, then all the holdout permutations
         x_categories = ['Baseline'] + history['holdout_group'].unique().tolist()
 
         # OPTIMIZATION: Pivot the history table to convert O(N^2) boolean loops into O(1) lookups
-        pivot_hist = history.pivot(index='trait', columns='holdout_group', values='loo_rank')
-        baseline_ranks = baseline.set_index('trait')['baseline_rank']
+        pivot_hist = history.pivot(index='target', columns='holdout_group', values='loo_rank')
+        baseline_ranks = baseline.set_index('target')['baseline_rank']
 
         for target in top_targets:
             # Build the Y-coordinates (Ranks) mapping to the X-coordinates

@@ -11,25 +11,21 @@ download your results without writing a single line of code.
 You can install the `seroepi` app directly from PyPI. We highly recommend using uv for lightning-fast installations,
 but standard `pip` works perfectly too.
 
-```bash
-# Using uv (Recommended)
-uv pip install seroepi[app]
-
-# Using standard pip
-pip install seroepi[app]
-```
+    # Using uv (Recommended)
+    uv pip install seroepi[app]
+    
+    # Using standard pip
+    pip install seroepi[app]
 
 ## 🚀 Running the Interactive Dashboard
 
 To launch the app locally from your command line:
 
-```bash
-# Using uv (Recommended)
-uv run shiny run seroepi.app
-
-# Or simply
-shiny run seroepi.app
-```
+    # Using uv (Recommended)
+    uv run shiny run seroepi.app
+    
+    # Or simply
+    shiny run seroepi.app
 
 ---
 
@@ -79,13 +75,13 @@ pooling) across our different countries to adjust for sampling biases.
 #### Step 4: Formulate the Vaccine & Inspect Stability
 With our Bayesian estimates calculated, we can design the optimal multi-valent vaccine.
 1. Navigate to the **Formulation** 💊 tab in the sidebar.
-2. **Trait Valency**: Use the slider to select your desired number of antigens (e.g., `6` for a hexavalent vaccine).
+2. **Trait Valency**: Use the slider to select your desired number of targets (e.g., `6` for a hexavalent vaccine).
 3. **Cross-Validation Stratum**: Select your country column.
 4. **Designer Type**: Select `Cross-Validated (Rigorous)`.
 5. Click **Generate Formulation** 🚀. The app will now perform Leave-One-Out (LOO) cross-validation, completely retraining the MCMC model multiple times, leaving one country out each time to see how the optimal formulation changes.
 
 **Inspecting the Results:**
-* Go to the **Stability Metrics** ⚖️ tab in the main window. Look at the **Rank Variance** and **Probability in Top N**. A good vaccine antigen will have a low rank variance (meaning its importance doesn't drastically change depending on which country you exclude).
+* Go to the **Stability Metrics** ⚖️ tab in the main window. Look at the **Rank Variance** and **Probability in Top N**. A good vaccine target will have a low rank variance (meaning its importance doesn't drastically change depending on which country you exclude).
 * Go to the **Plots** 📊 tab to see your Cross-Validation Stability Matrix (a bump chart showing the rank of each K-locus across different geographic holdouts).
 
 ### Phase 2: The "Hot-Swap" Evaluation (HIC Adult Data)

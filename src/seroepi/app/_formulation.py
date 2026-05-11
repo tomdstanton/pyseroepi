@@ -111,7 +111,7 @@ def formulation_server(input, output, session, app_state: dict):
     def update_custom_traits_choices():
         res = prev_results.get()
         if res is not None:
-            all_traits = res.data['trait'].unique().tolist()
+            all_traits = res.data['target'].unique().tolist()
             ui.update_selectize("custom_traits", choices=all_traits)
 
     @reactive.Effect

@@ -68,13 +68,13 @@ class Formulation:
         raw_df = baseline_result.data
 
         # 1. Calculate the true baseline prevalence for everything
-        baseline = raw_df.groupby('trait')['estimate'].sum().sort_values(ascending=False).reset_index()
+        baseline = raw_df.groupby('target')['estimate'].sum().sort_values(ascending=False).reset_index()
 
         # 2. Filter and reorder the baseline to match the user's custom list exactly
         # We use pd.Categorical to ensure the dataframe retains the exact order the user requested
-        baseline['trait_cat'] = pd.Categorical(baseline['trait'], categories=custom_targets, ordered=True)
-        custom_rankings = baseline.dropna(subset=['trait_cat']).sort_values('trait_cat').drop(
-            columns=['trait_cat'])
+        baseline['target_cat'] = pd.Categorical(baseline['target'], categories=custom_targets, ordered=True)
+        custom_rankings = baseline.dropna(subset=['target_cat']).sort_values('target_cat').drop(
+            columns=['target_cat'])
 
         # The new rank is simply the order they requested them in
         custom_rankings['baseline_rank'] = range(1, len(custom_targets) + 1)
@@ -114,7 +114,7 @@ class Formulation:
         Returns:
             A list of target names.
         """
-        return self.rankings.head(self.max_valency)['trait'].tolist()
+        return self.rankings.head(self.max_valency)['target'].tolist()
 
     def evaluate_longevity(self, forecast: 'IncidenceEstimates') -> pd.DataFrame:
         """
@@ -133,7 +133,7 @@ class Formulation:
         total_cases = df.groupby('date')['estimate'].sum().rename('total_cases')
 
         # 3. Calculate the expected cases caused ONLY by strains in our vaccine
-        covered_df = df[df['trait'].isin(targets)]
+        covered_df = df[df['target'].isin(targets)]
         covered_cases = covered_df.groupby('date')['estimate'].sum().rename('covered_cases')
 
         # 4. Merge and calculate the moving coverage percentage
@@ -222,8 +222,8 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
 
         # 2. Permutations (Vectorized O(N) Subtraction)
         # Pre-calculate global sums and the individual group sums
-        total_estimates = raw_df.groupby('trait')['estimate'].sum()
-        group_target_estimates = raw_df.groupby([loo_col, 'trait'])['estimate'].sum().unstack(fill_value=0)
+        total_estimates = raw_df.groupby('target')['estimate'].sum()
+        group_target_estimates = raw_df.groupby([loo_col, 'target'])['estimate'].sum().unstack(fill_value=0)
 
         unique_groups = raw_df[loo_col].unique()
         total_groups = len(unique_groups)
@@ -236,7 +236,7 @@ class PostHocFormulationDesigner(BaseFormulationDesigner):
                 loo_estimates = total_estimates.copy()
 
             loo_ranks = loo_estimates.sort_values(ascending=False).reset_index()
-            loo_ranks.columns = ['trait', 'estimate']
+            loo_ranks.columns = ['target', 'estimate']
             loo_ranks['loo_rank'] = loo_ranks.index + 1
             loo_ranks['holdout_group'] = group
             loo_records.append(loo_ranks)
@@ -308,7 +308,7 @@ class CVFormulationDesigner(BaseFormulationDesigner):
 # Functions ------------------------------------------------------------------------------------------------------------
 def _extract_ranks(df: pd.DataFrame, rank_col_name: str) -> pd.DataFrame:
     """Consistently groups, sums, sorts, and ranks traits."""
-    ranks = df.groupby('trait')['estimate'].sum().sort_values(ascending=False).reset_index()
+    ranks = df.groupby('target')['estimate'].sum().sort_values(ascending=False).reset_index()
     ranks[rank_col_name] = ranks.index + 1
     return ranks
 
@@ -331,11 +331,11 @@ def _compile_stability_metrics(
 ) -> 'Formulation':
     """Compiles the final variance and probability matrix for the _formulation."""
     stability = []
-    for t in baseline['trait']:
-        v_hist = history[history['trait'] == t]
+    for t in baseline['target']:
+        v_hist = history[history['target'] == t]
         var = v_hist['loo_rank'].var()
         stability.append({
-            'trait': t,
+            'target': t,
             'mean_loo_rank': v_hist['loo_rank'].mean(),
             'rank_variance': float(var) if pd.notna(var) else 0.0,
             'probability_in_top_n': (v_hist['loo_rank'] <= valency).mean()
@@ -345,7 +345,7 @@ def _compile_stability_metrics(
         trait=trait_name,
         max_valency=valency,
         rankings=baseline,
-        stability_metrics=pd.DataFrame(stability).set_index('trait'),
+        stability_metrics=pd.DataFrame(stability).set_index('target'),
         permutation_history=history
     )
 

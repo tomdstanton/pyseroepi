@@ -436,11 +436,11 @@ class EpiAccessor:
         else:
             agg_df = pd.DataFrame({'event': [events], 'n': [denoms]})
 
-        # Standardize the trait column to 'trait' for uniform downstream handling
+        # Standardize to 'target' for uniform downstream handling
         if trait_col:
-            agg_df['trait'] = trait_col
+            agg_df['target'] = trait_col
         else:
-            agg_df = agg_df.rename(columns={stratify_by[-1]: 'trait'})
+            agg_df = agg_df.rename(columns={stratify_by[-1]: 'target'})
 
         agg_df.attrs = self._obj.attrs.copy()
         agg_df.attrs['metric_meta'] = {
@@ -511,10 +511,10 @@ class EpiAccessor:
         else:
             div_df['n_total'] = div_df['variant_count'].sum()
 
-        # Standardize the trait column to 'trait'
-        div_df = div_df.rename(columns={trait_col: 'trait'})
+        # Standardize to 'target'
+        div_df = div_df.rename(columns={trait_col: 'target'})
         if is_trait:
-            div_df['trait'] = trait_col
+            div_df['target'] = trait_col
 
         div_df.attrs = self._obj.attrs.copy()
         div_df.attrs["metric_meta"] = {
@@ -623,11 +623,11 @@ class EpiAccessor:
         # A true 0 sequence volume is critical information for an epicurve gap.
         inc_df = inc_df.rename(columns={'date_bin': 'date'})
 
-        # Standardize the trait column to 'trait'
+        # Standardize to 'target'
         if trait_col:
-            inc_df['trait'] = trait_col
+            inc_df['target'] = trait_col
         else:
-            inc_df = inc_df.rename(columns={stratify_by[-1]: 'trait'})
+            inc_df = inc_df.rename(columns={stratify_by[-1]: 'target'})
 
         inc_df.attrs = self._obj.attrs.copy()
         inc_df.attrs['metric_meta'] = {
